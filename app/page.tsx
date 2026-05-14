@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw } from 'lucide-react';
+import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw, X } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 
@@ -176,8 +176,8 @@ export default function HomePage() {
         {exercises.length > 0 && (
           <button onClick={() => { setShowQuick(true); setQuickExercises(null); }}
             className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-colors active:scale-95 shadow-lg">
-            <Zap className="w-5 h-5 text-yellow-400" />
-            LAV EN HURTIG TRÆNING
+            {showQuick ? <X className="w-5 h-5 text-gray-400" /> : <Zap className="w-5 h-5 text-yellow-400" />}
+            {showQuick ? 'LUK HURTIG TRÆNING' : 'LAV EN HURTIG TRÆNING'}
           </button>
         )}
 
@@ -186,10 +186,18 @@ export default function HomePage() {
           <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl overflow-hidden shadow-lg animate-in slide-in-from-bottom-4">
 
             <div className="p-6 border-b border-white/10">
-              <h3 className="text-xl font-bold mb-1 flex items-center gap-2">
-                <Zap className="w-5 h-5 text-yellow-400" /> Hurtig træning
-              </h3>
-              <p className="text-sm text-gray-400">Vælg hvad du har til rådighed — vi finder 9 øvelser.</p>
+              <div className="flex items-start justify-between">
+                <div>
+                  <h3 className="text-xl font-bold mb-1 flex items-center gap-2">
+                    <Zap className="w-5 h-5 text-yellow-400" /> Hurtig træning
+                  </h3>
+                  <p className="text-sm text-gray-400">Vælg hvad du har til rådighed — vi finder 9 øvelser.</p>
+                </div>
+                <button onClick={() => { setShowQuick(false); setQuickExercises(null); }}
+                  className="p-2 rounded-full hover:bg-white/10 text-gray-400 transition-colors flex-shrink-0">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             <div className="p-6 flex flex-col gap-5">
