@@ -1,0 +1,45 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --color-primary-container: #ff6b00;
+  --color-on-primary-container: #572000;
+  --color-primary: #ffb693;
+  --color-inverse-primary: #a04100;
+  --color-background: #131313;
+  --color-surface: #131313;
+  --color-surface-container-lowest: #0e0e0e;
+  --color-surface-container-low: #1c1b1b;
+  --color-surface-container: #201f1f;
+  --color-surface-container-high: #2a2a2a;
+  --color-surface-container-highest: #353534;
+  --color-on-surface: #e5e2e1;
+  --color-on-surface-variant: #e2bfb0;
+  --color-secondary-container: #4b8eff;
+  --color-on-secondary-container: #00285c;
+  --color-error: #ffb4ab;
+  --color-outline-variant: #5a4136;
+  --color-tertiary-fixed-dim: #c6c6c7;
+  --color-tertiary-container: #989999;
+
+  --radius-DEFAULT: 0.25rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+  --radius-full: 9999px;
+
+  --spacing-unit: 4px;
+  --spacing-stack-sm: 8px;
+  --spacing-stack-md: 16px;
+  --spacing-stack-lg: 32px;
+  --spacing-margin-mobile: 20px;
+  --spacing-gutter-mobile: 12px;
+
+  --font-display-lg: var(--font-lexend), sans-serif;
+  --font-headline-lg: var(--font-lexend), sans-serif;
+  --font-headline-md: var(--font-lexend), sans-serif;
+  --font-body-lg: var(--font-inter), sans-serif;
+  --font-body-md: var(--font-inter), sans-serif;
+  --font-label-lg: var(--font-space-grotesk), sans-serif;
+  --font-label-sm: var(--font-space-grotesk), sans-serif;
+}
