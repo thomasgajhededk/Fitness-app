@@ -47,7 +47,7 @@ export function LoginScreen() {
           <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-orange-500 to-yellow-400 flex items-center justify-center font-bold text-white shadow-lg shadow-orange-500/20 mb-4">
             <Activity className="w-8 h-8" />
           </div>
-          <h1 className="text-3xl font-bold tracking-tighter">JAAFIT <span className="text-orange-500">PRO</span></h1>
+          <h1 className="text-3xl font-bold tracking-tighter">Gajhedes Træning</h1>
           <p className="text-xs text-gray-400 uppercase tracking-widest mt-1">
             {isSignUp ? 'Opret konto' : 'Log ind på din konto'}
           </p>

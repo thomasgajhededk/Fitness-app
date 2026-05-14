@@ -99,8 +99,8 @@ export default function HomePage() {
 
       <header className="mb-8 flex items-center justify-between z-10">
         <div>
-          <h1 className="text-2xl font-bold tracking-tighter">JAAFIT <span className="text-orange-500">PRO</span></h1>
-          <p className="text-xs text-gray-400 uppercase tracking-widest mt-1">Build your physique</p>
+          <h1 className="text-2xl font-bold tracking-tighter">Gajhedes Træning</h1>
+          <p className="text-xs text-gray-400 uppercase tracking-widest mt-1">Ingen undskyldning, bare igang</p>
         </div>
         <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-orange-500 to-yellow-400 flex items-center justify-center font-bold text-white shadow-lg shadow-orange-500/20">
           {initials}

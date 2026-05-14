@@ -8,8 +8,8 @@ const lexend = Lexend({ subsets: ['latin'], variable: '--font-lexend' });
 const spaceGrotesk = Space_Grotesk({ subsets: ['latin'], variable: '--font-space-grotesk' });
 
 export const metadata: Metadata = {
-  title: 'JAAFIT - Workout Tracking',
-  description: 'Mobile-first workout tracking PWA tailored for resistance band training and bodyweight high-intensity finishers.',
+  title: 'Gajhedes Træning',
+  description: 'Ingen undskyldning, bare igang',
 };
 
 export default function RootLayout({children}: {children: React.ReactNode}) {
