@@ -94,6 +94,7 @@ export default function WorkoutPage() {
 
   useEffect(() => {
     if (!isTimerRunning) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (timer <= 0) { setIsTimerRunning(false); handleTimerFinishRef.current(); return; }
     const id = setInterval(() => setTimer(prev => prev - 1), 1000);
     return () => clearInterval(id);
