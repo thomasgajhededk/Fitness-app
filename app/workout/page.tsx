@@ -7,6 +7,7 @@ import { useWakeLock } from '@/hooks/use-wake-lock';
 import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 import { ArrowLeft, Play, Pause, Check, FastForward, Trophy, Dumbbell, X } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
 
 type WorkoutState = 'EXERCISE_ACTIVE' | 'SET_REST' | 'TRANSITION' | 'FINISHED';
 
@@ -34,6 +35,8 @@ function Tag({ label, color }: { label: string; color: string }) {
 
 export default function WorkoutPage() {
   const { requestWakeLock, releaseWakeLock } = useWakeLock();
+  const searchParams = useSearchParams();
+  const dagLabel = searchParams.get('dag');
   const [user, setUser]                             = useState<User | null>(null);
   const [exercises, setExercises]                   = useState<Exercise[]>([]);
   const [userBands, setUserBands]                   = useState<Band[]>([]);
@@ -80,6 +83,18 @@ export default function WorkoutPage() {
       setBandsSaved(false);
     }
   }, [currentState, currentExercise]);
+
+  const saveSession = useCallback(async () => {
+    if (!user || !dagLabel) return;
+    await supabase.from('workout_sessions').insert({ user_id: user.id, day_label: dagLabel, completed_date: new Date().toISOString().split('T')[0] });
+  // Gem session én gang når træning er fuldført
+  const sessionSavedRef = useRef(false);
+  useEffect(() => {
+    if (currentState === 'FINISHED' && !sessionSavedRef.current) {
+      sessionSavedRef.current = true;
+      saveSession();
+    }
+  }, [currentState, saveSession]);
 
   const saveSetLog = useCallback(async (exerciseId: string, setNumber: number, durationSecs = 0) => {
     if (!user) return;
