@@ -103,7 +103,9 @@ export default function WorkoutPage() {
   // Sæt pendingBands når vi går i TRANSITION
   useEffect(() => {
     if (currentState === 'TRANSITION' && currentExercise) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPendingBands(currentExercise.selected_bands ?? []);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setBandsSaved(false);
     }
   }, [currentState, currentExercise]);
