@@ -1,21 +1,24 @@
 /* eslint-disable react/no-unescaped-entities */
+/* eslint-disable @next/next/no-img-element */
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Plus, Trash2, Home, Activity, X, ChevronDown, ImageIcon } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Home, Activity, X, ChevronDown, ImageIcon, Pencil } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 
 type WeightLog = { id: string; weight_kg: number; log_date: string };
-type Exercise  = { id: string; name: string; category: string | null; door_anchor_position: string | null; grip_type: string | null; selected_bands: string[]; image_url: string | null };
+type Exercise  = { id: string; name: string; category: string | null; recommended_reps: string | null; is_time_based: boolean; door_anchor_position: string | null; grip_type: string | null; selected_bands: string[]; image_url: string | null };
 type Band      = { id: string; name: string };
 
 const CATEGORIES  = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
 const ANCHOR_OPTS = [{ value: 'top', label: 'Øverst' }, { value: 'middle', label: 'Midden' }, { value: 'bottom', label: 'Bunden' }];
 const GRIP_OPTS   = [{ value: 'stang', label: 'Stang' }, { value: 'grib', label: 'Grib' }, { value: 'ingen_grib', label: 'Uden grib' }, { value: 'ankelbånd', label: 'Ankelbånd' }];
 const EMPTY_FORM  = { name: '', category: '', recommended_reps: '', is_time_based: false, use_door_anchor: false, door_anchor_position: 'top', use_grip: false, grip_type: 'grib', selected_bands: [] as string[] };
+
+type ModalMode = 'create' | 'edit';
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab]         = useState<'WEIGHT' | 'EXERCISES' | 'UDSTYR'>('WEIGHT');
@@ -32,15 +35,20 @@ export default function SettingsPage() {
   const [newBandName, setNewBandName]     = useState('');
   const [isAddingBand, setIsAddingBand]   = useState(false);
   const [isDeletingBandId, setIsDeletingBandId] = useState<string | null>(null);
+
+  // Modal
   const [showModal, setShowModal]         = useState(false);
+  const [modalMode, setModalMode]         = useState<ModalMode>('create');
+  const [editingId, setEditingId]         = useState<string | null>(null);
   const [form, setForm]                   = useState(EMPTY_FORM);
-  const [isCreating, setIsCreating]       = useState(false);
-  const [createError, setCreateError]     = useState<string | null>(null);
+  const [isSaving, setIsSaving]           = useState(false);
+  const [modalError, setModalError]       = useState<string | null>(null);
 
   // Billede
   const [imageFile, setImageFile]         = useState<File | null>(null);
   const [imagePreview, setImagePreview]   = useState<string | null>(null);
-  const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null);
+  const [removeImage, setRemoveImage]     = useState(false);
   const fileInputRef                      = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -58,7 +66,7 @@ export default function SettingsPage() {
 
   async function loadExercises() {
     setIsLoadingEx(true);
-    const { data } = await supabase.from('exercises').select('id, name, category, door_anchor_position, grip_type, selected_bands, image_url').order('name');
+    const { data } = await supabase.from('exercises').select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url').order('name');
     if (data) setExercises(data as Exercise[]);
     setIsLoadingEx(false);
   }
@@ -66,6 +74,105 @@ export default function SettingsPage() {
   async function loadBands(uid: string) {
     const { data } = await supabase.from('user_bands').select('id, name').eq('user_id', uid).order('created_at', { ascending: true });
     if (data) setBands(data);
+  }
+
+  function openCreateModal() {
+    setModalMode('create');
+    setEditingId(null);
+    setForm(EMPTY_FORM);
+    setImageFile(null); setImagePreview(null); setExistingImageUrl(null); setRemoveImage(false);
+    setModalError(null);
+    setShowModal(true);
+  }
+
+  function openEditModal(ex: Exercise) {
+    setModalMode('edit');
+    setEditingId(ex.id);
+    setForm({
+      name: ex.name,
+      category: ex.category ?? '',
+      recommended_reps: ex.recommended_reps ?? '',
+      is_time_based: ex.is_time_based,
+      use_door_anchor: !!ex.door_anchor_position,
+      door_anchor_position: ex.door_anchor_position ?? 'top',
+      use_grip: !!ex.grip_type,
+      grip_type: ex.grip_type ?? 'grib',
+      selected_bands: ex.selected_bands ?? [],
+    });
+    setImageFile(null);
+    setImagePreview(null);
+    setExistingImageUrl(ex.image_url);
+    setRemoveImage(false);
+    setModalError(null);
+    setShowModal(true);
+  }
+
+  function closeModal() {
+    setShowModal(false);
+    setForm(EMPTY_FORM);
+    setImageFile(null); setImagePreview(null); setExistingImageUrl(null); setRemoveImage(false);
+    setModalError(null);
+    setEditingId(null);
+  }
+
+  function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageFile(file); setRemoveImage(false);
+    const reader = new FileReader();
+    reader.onload = () => setImagePreview(reader.result as string);
+    reader.readAsDataURL(file);
+  }
+
+  async function uploadImage(userId: string): Promise<string | null> {
+    if (!imageFile) return null;
+    const ext  = imageFile.name.split('.').pop() ?? 'jpg';
+    const path = `${userId}/${Date.now()}.${ext}`;
+    const { error } = await supabase.storage.from('exercise-images').upload(path, imageFile, { contentType: imageFile.type, upsert: true });
+    if (error) return null;
+    const { data } = supabase.storage.from('exercise-images').getPublicUrl(path);
+    return data.publicUrl;
+  }
+
+  async function handleSave() {
+    if (!form.name.trim() || !user) return;
+    setIsSaving(true); setModalError(null);
+
+    // Håndter billede
+    let finalImageUrl: string | null = existingImageUrl;
+    if (imageFile) {
+      const uploaded = await uploadImage(user.id);
+      if (uploaded) finalImageUrl = uploaded;
+    }
+    if (removeImage) finalImageUrl = null;
+
+    const payload = {
+      name:                 form.name.trim(),
+      category:             form.category || null,
+      recommended_reps:     form.recommended_reps || null,
+      is_time_based:        form.is_time_based,
+      door_anchor_position: form.use_door_anchor ? form.door_anchor_position : null,
+      grip_type:            form.use_grip        ? form.grip_type            : null,
+      selected_bands:       form.selected_bands,
+      image_url:            finalImageUrl,
+    };
+
+    if (modalMode === 'create') {
+      const { data, error } = await supabase.from('exercises').insert({ ...payload, user_id: user.id })
+        .select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url').single();
+      setIsSaving(false);
+      if (error) { setModalError('Fejl: ' + error.message); return; }
+      if (data) setExercises(prev => [...prev, data as Exercise].sort((a, b) => a.name.localeCompare(b.name, 'da')));
+    } else {
+      if (!editingId) return;
+      const { data, error } = await supabase.from('exercises').update(payload).eq('id', editingId)
+        .select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url').single();
+      setIsSaving(false);
+      if (error) { setModalError('Fejl: ' + error.message); return; }
+      if (data) setExercises(prev => prev.map(ex => ex.id === editingId ? data as Exercise : ex));
+    }
+
+    closeModal();
   }
 
   async function handleLogWeight() {
@@ -82,11 +189,8 @@ export default function SettingsPage() {
   async function handleDeleteExercise(id: string) {
     setIsDeletingId(id); setDeleteError(null);
     const { error } = await supabase.from('exercises').delete().eq('id', id);
-    if (error) {
-      setDeleteError(error.code === '23503' ? 'Kan ikke slettes — øvelsen er logget i en træning.' : 'Fejl: ' + error.message);
-    } else {
-      setExercises(prev => prev.filter(e => e.id !== id));
-    }
+    if (error) { setDeleteError(error.code === '23503' ? 'Kan ikke slettes — øvelsen er logget i en træning.' : 'Fejl: ' + error.message); }
+    else { setExercises(prev => prev.filter(e => e.id !== id)); }
     setIsDeletingId(null);
   }
 
@@ -109,50 +213,6 @@ export default function SettingsPage() {
     setForm(prev => ({ ...prev, selected_bands: prev.selected_bands.includes(name) ? prev.selected_bands.filter(b => b !== name) : [...prev.selected_bands, name] }));
   }
 
-  function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImageFile(file);
-    const reader = new FileReader();
-    reader.onload = () => setImagePreview(reader.result as string);
-    reader.readAsDataURL(file);
-  }
-
-  async function uploadImage(userId: string): Promise<string | null> {
-    if (!imageFile) return null;
-    setIsUploadingImage(true);
-    const ext = imageFile.name.split('.').pop() ?? 'jpg';
-    const path = `${userId}/${Date.now()}.${ext}`;
-    const { error } = await supabase.storage.from('exercise-images').upload(path, imageFile, { contentType: imageFile.type, upsert: true });
-    setIsUploadingImage(false);
-    if (error) return null;
-    const { data } = supabase.storage.from('exercise-images').getPublicUrl(path);
-    return data.publicUrl;
-  }
-
-  async function handleCreate() {
-    if (!form.name.trim() || !user) return;
-    setIsCreating(true); setCreateError(null);
-    const imageUrl = await uploadImage(user.id);
-    const { data, error } = await supabase.from('exercises').insert({
-      name: form.name.trim(),
-      category: form.category || null,
-      recommended_reps: form.recommended_reps || null,
-      is_time_based: form.is_time_based,
-      door_anchor_position: form.use_door_anchor ? form.door_anchor_position : null,
-      grip_type: form.use_grip ? form.grip_type : null,
-      selected_bands: form.selected_bands,
-      image_url: imageUrl,
-      user_id: user.id,
-    }).select('id, name, category, door_anchor_position, grip_type, selected_bands, image_url').single();
-    setIsCreating(false);
-    if (error) { setCreateError('Fejl: ' + error.message); return; }
-    if (data) setExercises(prev => [...prev, data as Exercise].sort((a, b) => a.name.localeCompare(b.name, 'da')));
-    setForm(EMPTY_FORM); setImageFile(null); setImagePreview(null); setShowModal(false);
-  }
-
-  function closeModal() { setShowModal(false); setForm(EMPTY_FORM); setImageFile(null); setImagePreview(null); setCreateError(null); }
-
   const chartData    = weightLogs.map(l => ({ date: new Date(l.log_date).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' }), weight: l.weight_kg }));
   const latestWeight = weightLogs.length ? weightLogs[weightLogs.length - 1].weight_kg : '--';
 
@@ -164,31 +224,41 @@ export default function SettingsPage() {
     return parts.join(' · ') || 'Intet udstyr';
   }
 
+  // ── Fælles modal-indhold (bruges til både opret og rediger) ──
+  const currentImageSrc = imagePreview ?? (removeImage ? null : existingImageUrl);
+
   return (
     <div className="pb-24 min-h-screen bg-transparent flex flex-col relative text-white max-w-md mx-auto">
 
       {/* ── MODAL ── */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end justify-center" onClick={e => { if (e.target === e.currentTarget) closeModal(); }}>
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end justify-center"
+          onClick={e => { if (e.target === e.currentTarget) closeModal(); }}>
           <div className="w-full max-w-md bg-[#1c1b1b] border border-white/10 rounded-t-3xl p-6 shadow-2xl animate-in slide-in-from-bottom-4 duration-300 max-h-[92vh] overflow-y-auto">
+
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold tracking-tighter">Ny øvelse</h2>
+              <h2 className="text-xl font-bold tracking-tighter">
+                {modalMode === 'create' ? 'Ny øvelse' : 'Rediger øvelse'}
+              </h2>
               <button onClick={closeModal} className="p-2 rounded-full hover:bg-white/10 text-gray-400"><X className="w-5 h-5" /></button>
             </div>
 
             <div className="flex flex-col gap-5">
 
-              {/* Billede upload */}
+              {/* Billede */}
               <div>
                 <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Topbillede (16:9)</label>
                 <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageSelect} className="hidden" />
-                {imagePreview ? (
+                {currentImageSrc ? (
                   <div className="relative w-full rounded-2xl overflow-hidden" style={{ aspectRatio: '16/9' }}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" />
-                    <button onClick={() => { setImageFile(null); setImagePreview(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}
+                    <img src={currentImageSrc} alt="Preview" className="w-full h-full object-cover" />
+                    <button onClick={() => { setImageFile(null); setImagePreview(null); setRemoveImage(true); if (fileInputRef.current) fileInputRef.current.value = ''; }}
                       className="absolute top-2 right-2 bg-black/60 hover:bg-black/80 text-white rounded-full p-1.5 transition-colors">
                       <X className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => fileInputRef.current?.click()}
+                      className="absolute bottom-2 right-2 bg-black/60 hover:bg-black/80 text-white rounded-full p-1.5 transition-colors">
+                      <Pencil className="w-4 h-4" />
                     </button>
                   </div>
                 ) : (
@@ -225,7 +295,8 @@ export default function SettingsPage() {
               {/* Reps */}
               <div>
                 <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">{form.is_time_based ? 'Sekunder pr. sæt' : 'Reps / Mål'}</label>
-                <input type={form.is_time_based ? 'number' : 'text'} value={form.recommended_reps} onChange={e => setForm({ ...form, recommended_reps: e.target.value })}
+                <input type={form.is_time_based ? 'number' : 'text'} value={form.recommended_reps}
+                  onChange={e => setForm({ ...form, recommended_reps: e.target.value })}
                   placeholder={form.is_time_based ? 'Fx. 45' : 'Fx. 10-12'}
                   className="w-full bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-orange-500 text-white placeholder-gray-500" />
               </div>
@@ -239,7 +310,7 @@ export default function SettingsPage() {
                 </div>
               </button>
 
-              {/* Udstyr */}
+              {/* ── Udstyr ── */}
               <div className="border-t border-white/10 pt-5">
                 <p className="text-xs font-bold text-orange-400 uppercase tracking-wider mb-4">Udstyr</p>
 
@@ -247,7 +318,7 @@ export default function SettingsPage() {
                 <div className="mb-4">
                   <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Elastikker</label>
                   {bands.length === 0 ? (
-                    <p className="text-gray-500 text-sm italic">Ingen elastikker oprettet — gå til Udstyr-fanen.</p>
+                    <p className="text-gray-500 text-sm italic">Ingen elastikker — gå til Udstyr-fanen.</p>
                   ) : (
                     <div className="flex flex-wrap gap-2">
                       {bands.map(b => {
@@ -306,11 +377,11 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              {createError && <p className="text-red-400 text-sm font-medium bg-red-400/10 p-3 rounded-xl border border-red-400/20">{createError}</p>}
+              {modalError && <p className="text-red-400 text-sm font-medium bg-red-400/10 p-3 rounded-xl border border-red-400/20">{modalError}</p>}
 
-              <button type="button" onClick={handleCreate} disabled={isCreating || isUploadingImage || !form.name.trim()}
+              <button type="button" onClick={handleSave} disabled={isSaving || !form.name.trim()}
                 className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 transition-colors disabled:opacity-50 active:scale-95">
-                {isCreating || isUploadingImage ? 'GEMMER...' : 'OPRET ØVELSE'}
+                {isSaving ? 'GEMMER...' : modalMode === 'create' ? 'OPRET ØVELSE' : 'GEM ÆNDRINGER'}
               </button>
             </div>
           </div>
@@ -372,7 +443,7 @@ export default function SettingsPage() {
         {/* ── ØVELSER ── */}
         {activeTab === 'EXERCISES' && (
           <div className="animate-in fade-in">
-            <button onClick={() => { setShowModal(true); setCreateError(null); }}
+            <button onClick={openCreateModal}
               className="w-full bg-white/5 border border-dashed border-white/20 hover:bg-white/10 text-orange-400 font-bold py-4 rounded-3xl flex items-center justify-center gap-2 mb-4 transition-colors">
               <Plus className="w-5 h-5" /> OPRET NY ØVELSE
             </button>
@@ -392,7 +463,6 @@ export default function SettingsPage() {
                   <div key={ex.id} className="bg-white/5 backdrop-blur-xl rounded-3xl border border-white/10 overflow-hidden shadow-lg">
                     {ex.image_url && (
                       <div className="w-full" style={{ aspectRatio: '16/9' }}>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={ex.image_url} alt={ex.name} className="w-full h-full object-cover" />
                       </div>
                     )}
@@ -402,10 +472,18 @@ export default function SettingsPage() {
                         {ex.category && <p className="text-xs text-orange-400 uppercase font-semibold mt-1">{ex.category}</p>}
                         <p className="text-xs text-gray-500 mt-1 truncate">{equipmentSummary(ex)}</p>
                       </div>
-                      <button onClick={() => handleDeleteExercise(ex.id)} disabled={isDeletingId === ex.id}
-                        className="p-2 text-gray-400 hover:text-red-400 transition-colors bg-white/5 rounded-full border border-white/10 disabled:opacity-50 flex-shrink-0">
-                        {isDeletingId === ex.id ? <div className="w-4 h-4 border-2 border-white/10 border-t-red-400 rounded-full animate-spin" /> : <Trash2 className="w-4 h-4" />}
-                      </button>
+                      <div className="flex gap-2 flex-shrink-0">
+                        {/* Rediger */}
+                        <button onClick={() => openEditModal(ex)}
+                          className="p-2 text-gray-400 hover:text-orange-400 transition-colors bg-white/5 rounded-full border border-white/10">
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        {/* Slet */}
+                        <button onClick={() => handleDeleteExercise(ex.id)} disabled={isDeletingId === ex.id}
+                          className="p-2 text-gray-400 hover:text-red-400 transition-colors bg-white/5 rounded-full border border-white/10 disabled:opacity-50">
+                          {isDeletingId === ex.id ? <div className="w-4 h-4 border-2 border-white/10 border-t-red-400 rounded-full animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
