@@ -2,16 +2,22 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle } from 'lucide-react';
+import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 
-type Exercise = { id: string; name: string; category: string | null };
+type Exercise   = { id: string; name: string; category: string | null; selected_bands: string[]; door_anchor_position: string | null; grip_type: string | null };
+type Band       = { id: string; name: string };
 type ProgramDay = { label: string; exercises: Exercise[] };
 
-function shuffle<T>(arr: T[]): T[] {
-  return [...arr].sort(() => Math.random() - 0.5);
-}
+const GRIP_OPTS = [
+  { value: 'stang',      label: 'Stang'     },
+  { value: 'grib',       label: 'Grib'      },
+  { value: 'ingen_grib', label: 'Uden grib' },
+  { value: 'ankelbånd',  label: 'Ankelbånd' },
+];
+
+function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
 
 function buildProgram(exercises: Exercise[]): ProgramDay[] {
   const s = shuffle(exercises);
@@ -23,36 +29,54 @@ function buildProgram(exercises: Exercise[]): ProgramDay[] {
   ].filter(d => d.exercises.length > 0);
 }
 
-// Mandag i indeværende uge
 function getMondayISO(): string {
   const d = new Date();
-  const day = d.getDay(); // 0=sun
-  const diff = (day === 0 ? -6 : 1 - day);
+  const diff = (d.getDay() === 0 ? -6 : 1 - d.getDay());
   d.setDate(d.getDate() + diff);
   return d.toISOString().split('T')[0];
 }
 
+function filterByEquipment(
+  exercises: Exercise[],
+  availBands: string[],
+  hasDoorAnchor: boolean,
+  availGrips: string[]
+): Exercise[] {
+  return exercises.filter(ex => {
+    // Elastikker: alle øvelsens bands skal være tilgængelige (eller øvelsen har ingen)
+    if (ex.selected_bands?.length > 0) {
+      const hasAllBands = ex.selected_bands.every(b => availBands.includes(b));
+      if (!hasAllBands) return false;
+    }
+    // Døranker: øvelse kræver det, men brugeren har det ikke
+    if (ex.door_anchor_position && !hasDoorAnchor) return false;
+    // Grib: øvelse kræver et bestemt grib, men brugeren har det ikke
+    if (ex.grip_type && !availGrips.includes(ex.grip_type)) return false;
+    return true;
+  });
+}
+
 export default function HomePage() {
-  const [user, setUser]             = useState<User | null>(null);
-  const [exercises, setExercises]   = useState<Exercise[]>([]);
-  const [program, setProgram]       = useState<ProgramDay[] | null>(() => {
+  const [user, setUser]                 = useState<User | null>(null);
+  const [exercises, setExercises]       = useState<Exercise[]>([]);
+  const [userBands, setUserBands]       = useState<Band[]>([]);
+  const [program, setProgram]           = useState<ProgramDay[] | null>(() => {
     if (typeof window === 'undefined') return null;
-    try {
-      const saved = localStorage.getItem('jaafit_program');
-      return saved ? JSON.parse(saved) : null;
-    } catch { return null; }
+    try { const s = localStorage.getItem('jaafit_program'); return s ? JSON.parse(s) : null; } catch { return null; }
   });
   const [isGenerating, setIsGenerating] = useState(false);
-  const [hasLoaded, setHasLoaded]   = useState(false);
+  const [hasLoaded, setHasLoaded]       = useState(false);
   const [completedDays, setCompletedDays] = useState<string[]>([]);
 
+  // Hurtig træning
+  const [showQuick, setShowQuick]       = useState(false);
+  const [availBands, setAvailBands]     = useState<string[]>([]);
+  const [hasDoorAnchor, setHasDoorAnchor] = useState(false);
+  const [availGrips, setAvailGrips]     = useState<string[]>([]);
+  const [quickExercises, setQuickExercises] = useState<Exercise[] | null>(null);
+
   const loadCompletedDays = useCallback(async (uid: string) => {
-    const monday = getMondayISO();
-    const { data } = await supabase
-      .from('workout_sessions')
-      .select('day_label')
-      .eq('user_id', uid)
-      .gte('completed_date', monday);
+    const { data } = await supabase.from('workout_sessions').select('day_label').eq('user_id', uid).gte('completed_date', getMondayISO());
     if (data) setCompletedDays(data.map(r => r.day_label));
   }, []);
 
@@ -61,37 +85,52 @@ export default function HomePage() {
       const { data: { user } } = await supabase.auth.getUser();
       setUser(user);
       if (user) {
-        const [exRes] = await Promise.all([
-          supabase.from('exercises').select('id, name, category').order('name'),
+        const [exRes, bandRes] = await Promise.all([
+          supabase.from('exercises').select('id, name, category, selected_bands, door_anchor_position, grip_type').order('name'),
+          supabase.from('user_bands').select('id, name').eq('user_id', user.id).order('created_at', { ascending: true }),
           loadCompletedDays(user.id),
         ]);
-        if (exRes.data) setExercises(exRes.data);
+        if (exRes.data) setExercises(exRes.data as Exercise[]);
+        if (bandRes.data) setUserBands(bandRes.data as Band[]);
       }
       setHasLoaded(true);
     })();
   }, [loadCompletedDays]);
 
-  // Genindlæs completed days når vi vender tilbage til siden
   useEffect(() => {
-    const handleFocus = () => { if (user) loadCompletedDays(user.id); };
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
+    const onFocus = () => { if (user) loadCompletedDays(user.id); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, [user, loadCompletedDays]);
 
   function handleGenerate() {
-    if (exercises.length === 0) return;
+    if (!exercises.length) return;
     setIsGenerating(true);
     setTimeout(() => {
-      const newProgram = buildProgram(exercises);
-      setProgram(newProgram);
-      localStorage.setItem('jaafit_program', JSON.stringify(newProgram));
+      const p = buildProgram(exercises);
+      setProgram(p);
+      localStorage.setItem('jaafit_program', JSON.stringify(p));
       setIsGenerating(false);
     }, 600);
   }
 
-  const initials = user?.email ? user.email.slice(0, 2).toUpperCase() : '??';
+  function generateQuick() {
+    const filtered = filterByEquipment(exercises, availBands, hasDoorAnchor, availGrips);
+    const picked   = shuffle(filtered).slice(0, 9);
+    setQuickExercises(picked);
+  }
 
-  const allDays = program ?? [];
+  function toggleBand(name: string) {
+    setAvailBands(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name]);
+    setQuickExercises(null);
+  }
+  function toggleGrip(val: string) {
+    setAvailGrips(prev => prev.includes(val) ? prev.filter(g => g !== val) : [...prev, val]);
+    setQuickExercises(null);
+  }
+
+  const initials     = user?.email ? user.email.slice(0, 2).toUpperCase() : '??';
+  const allDays      = program ?? [];
   const completedCount = allDays.filter(d => completedDays.includes(d.label)).length;
 
   return (
@@ -109,19 +148,18 @@ export default function HomePage() {
 
       <main className="flex-1 flex flex-col gap-6 z-10">
 
-        {/* Generator-kort */}
+        {/* ── 3-DAY GENERATOR ── */}
         <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 relative overflow-hidden">
           <div className="absolute -top-12 -right-12 w-32 h-32 bg-orange-500/20 rounded-full blur-3xl pointer-events-none z-0" />
           <div className="relative z-10">
             <h2 className="text-2xl font-bold mb-2">3-Day Protocol</h2>
             <p className="text-sm text-gray-400 mb-6">
-              {exercises.length === 0 && hasLoaded
+              {!exercises.length && hasLoaded
                 ? 'Opret øvelser under Indstillinger, så genererer vi dit program.'
                 : 'Generér et nyt 3-dages program ud fra dine øvelser.'}
             </p>
-            {exercises.length === 0 && hasLoaded ? (
-              <Link href="/settings"
-                className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
+            {!exercises.length && hasLoaded ? (
+              <Link href="/settings" className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
                 <Settings className="w-5 h-5" /> OPRET ØVELSER FØRST
               </Link>
             ) : (
@@ -134,38 +172,150 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Ugeoversigt når program er genereret */}
+        {/* ── HURTIG TRÆNING KNAP ── */}
+        {exercises.length > 0 && (
+          <button onClick={() => { setShowQuick(true); setQuickExercises(null); }}
+            className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-colors active:scale-95 shadow-lg">
+            <Zap className="w-5 h-5 text-yellow-400" />
+            LAV EN HURTIG TRÆNING
+          </button>
+        )}
+
+        {/* ── HURTIG TRÆNING PANEL ── */}
+        {showQuick && (
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl overflow-hidden shadow-lg animate-in slide-in-from-bottom-4">
+
+            <div className="p-6 border-b border-white/10">
+              <h3 className="text-xl font-bold mb-1 flex items-center gap-2">
+                <Zap className="w-5 h-5 text-yellow-400" /> Hurtig træning
+              </h3>
+              <p className="text-sm text-gray-400">Vælg hvad du har til rådighed — vi finder 9 øvelser.</p>
+            </div>
+
+            <div className="p-6 flex flex-col gap-5">
+
+              {/* Elastikker */}
+              {userBands.length > 0 && (
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Elastikker</label>
+                  <div className="flex flex-wrap gap-2">
+                    {userBands.map(b => {
+                      const sel = availBands.includes(b.name);
+                      return (
+                        <button key={b.id} type="button" onClick={() => toggleBand(b.name)}
+                          className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors ${sel ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                          {b.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Døranker */}
+              <button type="button" onClick={() => { setHasDoorAnchor(p => !p); setQuickExercises(null); }}
+                className={`flex items-center justify-between px-4 py-3 rounded-2xl border transition-colors ${hasDoorAnchor ? 'bg-blue-500/20 border-blue-500/40 text-blue-400' : 'bg-white/5 border-white/10 text-gray-400'}`}>
+                <span className="text-sm font-bold uppercase tracking-wider">Døranker</span>
+                <div className={`w-12 h-6 rounded-full flex items-center px-1 transition-colors ${hasDoorAnchor ? 'bg-blue-500 justify-end' : 'bg-white/10 justify-start'}`}>
+                  <div className="w-4 h-4 rounded-full bg-white shadow" />
+                </div>
+              </button>
+
+              {/* Grib */}
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Grib</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {GRIP_OPTS.map(g => {
+                    const sel = availGrips.includes(g.value);
+                    return (
+                      <button key={g.value} type="button" onClick={() => toggleGrip(g.value)}
+                        className={`py-2.5 rounded-xl text-sm font-bold border transition-colors ${sel ? 'bg-purple-500 border-purple-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                        {g.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Generér-knap */}
+              {!quickExercises && (
+                <button onClick={generateQuick}
+                  className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-2xl shadow-lg shadow-yellow-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
+                  <Zap className="w-5 h-5" /> FIND 9 ØVELSER
+                </button>
+              )}
+            </div>
+
+            {/* ── Resultat ── */}
+            {quickExercises !== null && (
+              <div className="border-t border-white/10">
+                {quickExercises.length === 0 ? (
+                  <div className="p-6 text-center">
+                    <p className="text-gray-400 mb-4">Ingen øvelser matcher det valgte udstyr.<br/>Prøv at vælge mere udstyr.</p>
+                    <button onClick={generateQuick} className="text-orange-400 font-bold text-sm uppercase tracking-wider">Prøv igen</button>
+                  </div>
+                ) : (
+                  <div className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <p className="text-sm font-bold text-gray-300 uppercase tracking-wider">{quickExercises.length} øvelser valgt</p>
+                      <button onClick={generateQuick} className="flex items-center gap-1 text-xs text-gray-400 hover:text-white font-bold uppercase tracking-wider transition-colors">
+                        <RotateCcw className="w-3 h-3" /> Lav ny
+                      </button>
+                    </div>
+
+                    <div className="space-y-2 mb-6">
+                      {quickExercises.map((ex, i) => (
+                        <div key={ex.id} className="flex items-center gap-3 bg-white/5 rounded-2xl px-4 py-3 border border-white/10">
+                          <span className="text-orange-500 font-bold text-sm w-5 flex-shrink-0">{i + 1}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-bold text-sm truncate">{ex.name}</p>
+                            {ex.category && <p className="text-[11px] text-gray-500 uppercase">{ex.category}</p>}
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-gray-600 flex-shrink-0" />
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex gap-3">
+                      <button onClick={generateQuick}
+                        className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 font-bold py-4 rounded-2xl transition-colors active:scale-95 flex items-center justify-center gap-2">
+                        <RotateCcw className="w-4 h-4" /> Lav ny
+                      </button>
+                      <Link
+                        href={`/workout?ids=${quickExercises.map(e => e.id).join(',')}`}
+                        className="flex-[2] bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
+                        <Zap className="w-5 h-5" /> START
+                      </Link>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── UGEOVERSIGT ── */}
         {program && (
           <div className="animate-in fade-in slide-in-from-bottom-4">
-
-            {/* Ugestatus */}
             <div className="flex items-center justify-between mb-3 px-1">
               <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Denne uge</p>
               <p className="text-xs font-bold text-orange-400">{completedCount} / {allDays.length} fuldført</p>
             </div>
-
-            {/* Fremskridtsbar */}
             <div className="h-1.5 bg-white/10 rounded-full mb-5 overflow-hidden">
-              <div
-                className="h-full bg-orange-500 rounded-full transition-all duration-500"
-                style={{ width: allDays.length > 0 ? `${(completedCount / allDays.length) * 100}%` : '0%' }}
-              />
+              <div className="h-full bg-orange-500 rounded-full transition-all duration-500"
+                style={{ width: allDays.length > 0 ? `${(completedCount / allDays.length) * 100}%` : '0%' }} />
             </div>
-
             <div className="flex flex-col gap-4">
               {program.map((day) => {
                 const done = completedDays.includes(day.label);
                 return (
                   <div key={day.label}
                     className={`backdrop-blur-xl rounded-3xl border overflow-hidden shadow-lg transition-all ${done ? 'bg-green-500/10 border-green-500/30' : 'bg-white/5 border-white/10'}`}>
-
-                    {/* Dag-header */}
                     <div className="flex items-center justify-between px-6 pt-5 pb-3">
                       <div className="flex items-center gap-3">
                         {done
                           ? <CheckCircle2 className="w-6 h-6 text-green-400 flex-shrink-0" />
-                          : <Circle className="w-6 h-6 text-gray-600 flex-shrink-0" />
-                        }
+                          : <Circle className="w-6 h-6 text-gray-600 flex-shrink-0" />}
                         <div>
                           <h3 className={`text-lg font-bold ${done ? 'text-green-300' : 'text-white'}`}>{day.label}</h3>
                           {done && <p className="text-xs text-green-500 font-semibold uppercase tracking-wider">Fuldført</p>}
@@ -175,18 +325,14 @@ export default function HomePage() {
                         {day.exercises.length} øvelser
                       </span>
                     </div>
-
-                    {/* Øvelsesliste */}
                     <div className="px-6 pb-4 space-y-1.5">
-                      {day.exercises.map((ex) => (
+                      {day.exercises.map(ex => (
                         <div key={ex.id} className="flex items-center gap-2">
                           <span className={`text-xs ${done ? 'text-green-500' : 'text-orange-400'}`}>●</span>
                           <p className={`text-sm font-medium ${done ? 'text-green-200/70 line-through decoration-green-500/40' : 'text-white'}`}>{ex.name}</p>
                         </div>
                       ))}
                     </div>
-
-                    {/* Start-knap — kun hvis ikke fuldført */}
                     <div className="px-6 pb-5">
                       {done ? (
                         <div className="w-full text-center text-green-400 text-sm font-bold py-3 rounded-2xl bg-green-500/10 border border-green-500/20">
@@ -207,7 +353,7 @@ export default function HomePage() {
         )}
 
         {/* Hurtig start hvis intet program */}
-        {!program && exercises.length > 0 && hasLoaded && (
+        {!program && !showQuick && exercises.length > 0 && hasLoaded && (
           <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 shadow-lg">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xl font-bold">Hurtig start</h3>
@@ -220,6 +366,7 @@ export default function HomePage() {
             </Link>
           </div>
         )}
+
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 bg-black/80 backdrop-blur-2xl border-t border-white/10 pb-safe px-8 py-4 z-50">
