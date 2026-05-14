@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-img-element */
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -18,23 +19,19 @@ type Exercise = {
   door_anchor_position: string | null;
   grip_type: string | null;
   selected_bands: string[];
+  image_url: string | null;
   user_exercise_settings: { current_load: string | null }[];
 };
 
 const ANCHOR_LABEL: Record<string, string> = { top: 'Øverst', middle: 'Midden', bottom: 'Bunden' };
 const GRIP_LABEL:   Record<string, string> = { stang: 'Stang', grib: 'Grib', ingen_grib: 'Uden grib', 'ankelbånd': 'Ankelbånd' };
 
-function EquipmentTag({ label, color }: { label: string; color: string }) {
-  return (
-    <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold border ${color}`}>
-      {label}
-    </span>
-  );
+function Tag({ label, color }: { label: string; color: string }) {
+  return <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold border ${color}`}>{label}</span>;
 }
 
 export default function WorkoutPage() {
   const { requestWakeLock, releaseWakeLock } = useWakeLock();
-
   const [user, setUser]                             = useState<User | null>(null);
   const [exercises, setExercises]                   = useState<Exercise[]>([]);
   const [isLoadingExercises, setIsLoadingExercises] = useState(true);
@@ -46,14 +43,12 @@ export default function WorkoutPage() {
   const [newLoadInput, setNewLoadInput]             = useState('');
   const [loadSaved, setLoadSaved]                   = useState(false);
   const [isSavingLoad, setIsSavingLoad]             = useState(false);
-
   const handleTimerFinishRef = useRef<() => void>(() => {});
 
   const currentExercise = exercises[currentExerciseIndex] ?? null;
   const isLastExercise  = currentExerciseIndex === exercises.length - 1;
   const isLastSet       = currentSet === 3;
-  const timeSecs        = currentExercise?.is_time_based
-    ? parseInt(currentExercise.recommended_reps || '45', 10) || 45 : 45;
+  const timeSecs        = currentExercise?.is_time_based ? parseInt(currentExercise.recommended_reps || '45', 10) || 45 : 45;
   const currentLoad     = currentExercise?.user_exercise_settings?.[0]?.current_load || null;
 
   useEffect(() => {
@@ -62,7 +57,7 @@ export default function WorkoutPage() {
       setUser(user);
       const { data, error } = await supabase
         .from('exercises')
-        .select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, user_exercise_settings(current_load)')
+        .select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url, user_exercise_settings(current_load)')
         .order('category');
       if (!error && data) setExercises(data as Exercise[]);
       setIsLoadingExercises(false);
@@ -161,57 +156,59 @@ export default function WorkoutPage() {
         <div className="w-10" />
       </header>
 
-      <main className="flex-1 flex flex-col p-6 items-center justify-center relative z-10">
+      <main className="flex-1 flex flex-col relative z-10 overflow-y-auto">
 
         {/* EXERCISE ACTIVE */}
         {currentState === 'EXERCISE_ACTIVE' && currentExercise && (
-          <div className="w-full flex justify-center flex-col h-full animate-in fade-in slide-in-from-bottom-4">
-            <div className="text-center mb-6">
-              {currentExercise.category && (
-                <span className="inline-block px-3 py-1 bg-white/10 border border-white/10 text-orange-400 text-xs font-bold uppercase rounded-lg mb-4 tracking-wider">
-                  {currentExercise.category}
-                </span>
-              )}
-              <h2 className="text-4xl font-bold mb-4 leading-tight tracking-tighter">{currentExercise.name}</h2>
+          <div className="flex flex-col min-h-full">
+
+            {/* 16:9 topbillede */}
+            {currentExercise.image_url && (
+              <div className="w-full flex-shrink-0" style={{ aspectRatio: '16/9' }}>
+                <img src={currentExercise.image_url} alt={currentExercise.name} className="w-full h-full object-cover" />
+              </div>
+            )}
+
+            <div className="flex-1 flex flex-col p-6">
+              <div className="text-center mb-4">
+                {currentExercise.category && (
+                  <span className="inline-block px-3 py-1 bg-white/10 border border-white/10 text-orange-400 text-xs font-bold uppercase rounded-lg mb-3 tracking-wider">
+                    {currentExercise.category}
+                  </span>
+                )}
+                <h2 className="text-4xl font-bold leading-tight tracking-tighter">{currentExercise.name}</h2>
+              </div>
 
               {/* Udstyrskort */}
-              <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-5 border border-white/10 shadow-lg mb-4 text-left">
+              <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-5 border border-white/10 shadow-lg mb-4">
 
-                {/* Elastikker */}
                 {currentExercise.selected_bands?.length > 0 && (
                   <div className="mb-4 pb-4 border-b border-white/10">
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Elastikker</p>
                     <div className="flex flex-wrap gap-2">
-                      {currentExercise.selected_bands.map((b, i) => (
-                        <EquipmentTag key={i} label={b} color="bg-orange-500/20 border-orange-500/30 text-orange-300" />
-                      ))}
+                      {currentExercise.selected_bands.map((b, i) => <Tag key={i} label={b} color="bg-orange-500/20 border-orange-500/30 text-orange-300" />)}
                     </div>
                   </div>
                 )}
 
-                {/* Døranker */}
                 {currentExercise.door_anchor_position && (
                   <div className="mb-4 pb-4 border-b border-white/10">
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Døranker</p>
-                    <EquipmentTag label={ANCHOR_LABEL[currentExercise.door_anchor_position] ?? currentExercise.door_anchor_position} color="bg-blue-500/20 border-blue-500/30 text-blue-300" />
+                    <Tag label={ANCHOR_LABEL[currentExercise.door_anchor_position] ?? currentExercise.door_anchor_position} color="bg-blue-500/20 border-blue-500/30 text-blue-300" />
                   </div>
                 )}
 
-                {/* Grib */}
                 {currentExercise.grip_type && (
                   <div className="mb-4 pb-4 border-b border-white/10">
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Grib</p>
-                    <EquipmentTag label={GRIP_LABEL[currentExercise.grip_type] ?? currentExercise.grip_type} color="bg-purple-500/20 border-purple-500/30 text-purple-300" />
+                    <Tag label={GRIP_LABEL[currentExercise.grip_type] ?? currentExercise.grip_type} color="bg-purple-500/20 border-purple-500/30 text-purple-300" />
                   </div>
                 )}
 
-                {/* Mål & load */}
                 <div className="flex justify-between items-center">
                   <div>
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">Mål</p>
-                    <p className="font-bold text-lg">
-                      {currentExercise.is_time_based ? `${timeSecs} sek` : `${currentExercise.recommended_reps || '?'} reps`}
-                    </p>
+                    <p className="font-bold text-lg">{currentExercise.is_time_based ? `${timeSecs} sek` : `${currentExercise.recommended_reps || '?'} reps`}</p>
                   </div>
                   {currentLoad && (
                     <div className="text-right">
@@ -221,35 +218,36 @@ export default function WorkoutPage() {
                   )}
                 </div>
               </div>
-            </div>
 
-            <div className="mt-auto w-full flex flex-col gap-3">
-              {currentExercise.is_time_based ? (
-                <>
-                  <button onClick={() => isTimerRunning ? setIsTimerRunning(false) : startTimer(timeSecs)}
-                    className={`w-full font-bold py-6 rounded-2xl flex items-center justify-center gap-3 transition-colors active:scale-95 shadow-lg border border-white/10 ${isTimerRunning ? 'bg-red-500/80 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-orange-500/20'}`}>
-                    {isTimerRunning ? <Pause className="fill-current w-8 h-8" /> : <Play className="fill-current w-8 h-8" />}
-                    <span className="text-xl tracking-wide">{isTimerRunning ? `TID: ${timer}s` : 'START TIMER'}</span>
-                  </button>
-                  {!isTimerRunning && timer > 0 && timer < timeSecs && (
-                    <button onClick={handleLogSet} className="w-full bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 active:scale-95 transition-colors">
-                      <Check className="w-5 h-5 text-green-400" /> LOG SÆT ALLIGEVEL
+              {/* Knapper */}
+              <div className="flex flex-col gap-3 mt-auto">
+                {currentExercise.is_time_based ? (
+                  <>
+                    <button onClick={() => isTimerRunning ? setIsTimerRunning(false) : startTimer(timeSecs)}
+                      className={`w-full font-bold py-6 rounded-2xl flex items-center justify-center gap-3 transition-colors active:scale-95 shadow-lg border border-white/10 ${isTimerRunning ? 'bg-red-500/80 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-orange-500/20'}`}>
+                      {isTimerRunning ? <Pause className="fill-current w-8 h-8" /> : <Play className="fill-current w-8 h-8" />}
+                      <span className="text-xl tracking-wide">{isTimerRunning ? `TID: ${timer}s` : 'START TIMER'}</span>
                     </button>
-                  )}
-                </>
-              ) : (
-                <button onClick={handleLogSet} className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-6 rounded-2xl flex items-center justify-center gap-3 transition-colors active:scale-95 shadow-lg shadow-orange-500/20">
-                  <Check className="w-8 h-8 stroke-[3]" />
-                  <span className="text-xl tracking-wide">LOG SÆT {currentSet}</span>
-                </button>
-              )}
+                    {!isTimerRunning && timer > 0 && timer < timeSecs && (
+                      <button onClick={handleLogSet} className="w-full bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 active:scale-95 transition-colors">
+                        <Check className="w-5 h-5 text-green-400" /> LOG SÆT ALLIGEVEL
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <button onClick={handleLogSet} className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-6 rounded-2xl flex items-center justify-center gap-3 transition-colors active:scale-95 shadow-lg shadow-orange-500/20">
+                    <Check className="w-8 h-8 stroke-[3]" />
+                    <span className="text-xl tracking-wide">LOG SÆT {currentSet}</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
 
         {/* SET REST */}
         {currentState === 'SET_REST' && (
-          <div className="w-full flex-col flex h-full items-center justify-center animate-in zoom-in-95 duration-300">
+          <div className="w-full flex-col flex h-full items-center justify-center p-6 animate-in zoom-in-95 duration-300">
             <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400 mb-4 bg-white/5 px-4 py-1 rounded-full border border-white/10">
               Pause inden sæt {currentSet + 1}
             </h3>
@@ -270,7 +268,7 @@ export default function WorkoutPage() {
 
         {/* TRANSITION */}
         {currentState === 'TRANSITION' && (
-          <div className="w-full flex-col flex h-full justify-between animate-in slide-in-from-right">
+          <div className="w-full flex-col flex h-full justify-between p-6 animate-in slide-in-from-right">
             <div className="text-center pt-8">
               <p className="text-[10px] text-blue-400 uppercase font-bold tracking-widest mb-2 px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full inline-block">
                 {isLastExercise ? 'Sidste transition' : 'Næste øvelse'}
@@ -281,7 +279,6 @@ export default function WorkoutPage() {
               <div className="text-[80px] font-mono font-bold text-white mb-2">{timer}</div>
               <p className="text-gray-400 text-sm uppercase tracking-widest">Sekunder til start</p>
             </div>
-
             <div className="mt-8 bg-white/5 backdrop-blur-xl border border-white/20 p-6 rounded-3xl shadow-2xl relative overflow-hidden">
               <div className="absolute inset-0 bg-gradient-to-tr from-orange-500/10 to-transparent pointer-events-none" />
               <h4 className="font-bold text-orange-400 mb-2 relative z-10 uppercase tracking-wider text-sm">Smart Progression</h4>
@@ -292,14 +289,11 @@ export default function WorkoutPage() {
                   className="flex-1 bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-orange-500 text-white placeholder-gray-500" />
                 <button onClick={handleSaveLoad} disabled={isSavingLoad || !newLoadInput.trim()}
                   className="bg-white/10 hover:bg-white/20 px-4 rounded-2xl border border-white/10 font-bold transition-colors disabled:opacity-50 min-w-[56px] flex items-center justify-center">
-                  {isSavingLoad ? <span className="text-gray-400 text-xs">...</span>
-                    : loadSaved ? <Check className="w-5 h-5 text-green-400" />
-                    : <span className="text-orange-400 text-sm font-bold">GEM</span>}
+                  {isSavingLoad ? <span className="text-gray-400 text-xs">...</span> : loadSaved ? <Check className="w-5 h-5 text-green-400" /> : <span className="text-orange-400 text-sm font-bold">GEM</span>}
                 </button>
               </div>
             </div>
-
-            <button onClick={handleSkip} className="w-full bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold py-5 rounded-2xl flex items-center justify-center gap-2 mt-8 active:scale-95 transition-colors mb-8">
+            <button onClick={handleSkip} className="w-full bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold py-5 rounded-2xl flex items-center justify-center gap-2 mt-8 active:scale-95 transition-colors mb-4">
               START NÆSTE NU
             </button>
           </div>
