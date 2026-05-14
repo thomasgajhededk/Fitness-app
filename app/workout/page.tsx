@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useWakeLock } from '@/hooks/use-wake-lock';
 import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
-import { ArrowLeft, Play, Pause, Check, FastForward, Trophy, Dumbbell } from 'lucide-react';
+import { ArrowLeft, Play, Pause, Check, FastForward, Trophy, Dumbbell, X } from 'lucide-react';
 
 type WorkoutState = 'EXERCISE_ACTIVE' | 'SET_REST' | 'TRANSITION' | 'FINISHED';
 
@@ -23,6 +23,8 @@ type Exercise = {
   user_exercise_settings: { current_load: string | null }[];
 };
 
+type Band = { id: string; name: string };
+
 const ANCHOR_LABEL: Record<string, string> = { top: 'Øverst', middle: 'Midden', bottom: 'Bunden' };
 const GRIP_LABEL:   Record<string, string> = { stang: 'Stang', grib: 'Grib', ingen_grib: 'Uden grib', 'ankelbånd': 'Ankelbånd' };
 
@@ -34,15 +36,19 @@ export default function WorkoutPage() {
   const { requestWakeLock, releaseWakeLock } = useWakeLock();
   const [user, setUser]                             = useState<User | null>(null);
   const [exercises, setExercises]                   = useState<Exercise[]>([]);
+  const [userBands, setUserBands]                   = useState<Band[]>([]);
   const [isLoadingExercises, setIsLoadingExercises] = useState(true);
   const [currentState, setCurrentState]             = useState<WorkoutState>('EXERCISE_ACTIVE');
   const [currentExerciseIndex, setCurrentExerciseIndex] = useState(0);
   const [currentSet, setCurrentSet]                 = useState(1);
   const [timer, setTimer]                           = useState(0);
   const [isTimerRunning, setIsTimerRunning]         = useState(false);
-  const [newLoadInput, setNewLoadInput]             = useState('');
-  const [loadSaved, setLoadSaved]                   = useState(false);
-  const [isSavingLoad, setIsSavingLoad]             = useState(false);
+
+  // Elastikskift i transition
+  const [pendingBands, setPendingBands]             = useState<string[]>([]);
+  const [isSavingBands, setIsSavingBands]           = useState(false);
+  const [bandsSaved, setBandsSaved]                 = useState(false);
+
   const handleTimerFinishRef = useRef<() => void>(() => {});
 
   const currentExercise = exercises[currentExerciseIndex] ?? null;
@@ -55,16 +61,25 @@ export default function WorkoutPage() {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
       setUser(user);
-      const { data, error } = await supabase
-        .from('exercises')
-        .select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url, user_exercise_settings(current_load)')
-        .order('category');
-      if (!error && data) setExercises(data as Exercise[]);
+      const [exRes, bandRes] = await Promise.all([
+        supabase.from('exercises').select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url, user_exercise_settings(current_load)').order('category'),
+        user ? supabase.from('user_bands').select('id, name').eq('user_id', user.id).order('created_at', { ascending: true }) : Promise.resolve({ data: [] }),
+      ]);
+      if (!exRes.error && exRes.data) setExercises(exRes.data as Exercise[]);
+      if (bandRes.data) setUserBands(bandRes.data as Band[]);
       setIsLoadingExercises(false);
     })();
   }, []);
 
   useEffect(() => { requestWakeLock(); return () => { releaseWakeLock(); }; }, [requestWakeLock, releaseWakeLock]);
+
+  // Når vi går i TRANSITION: sæt pendingBands til øvelsens nuværende bands
+  useEffect(() => {
+    if (currentState === 'TRANSITION' && currentExercise) {
+      setPendingBands(currentExercise.selected_bands ?? []);
+      setBandsSaved(false);
+    }
+  }, [currentState, currentExercise]);
 
   const saveSetLog = useCallback(async (exerciseId: string, setNumber: number, durationSecs = 0) => {
     if (!user) return;
@@ -95,8 +110,8 @@ export default function WorkoutPage() {
     return () => clearInterval(id);
   }, [isTimerRunning, timer]);
 
-  const startTimer  = (secs: number) => { setTimer(secs); setIsTimerRunning(true); };
-  const handleSkip  = () => { setIsTimerRunning(false); setTimer(0); handleTimerFinishRef.current(); };
+  const startTimer = (secs: number) => { setTimer(secs); setIsTimerRunning(true); };
+  const handleSkip = () => { setIsTimerRunning(false); setTimer(0); handleTimerFinishRef.current(); };
 
   const handleLogSet = async () => {
     if (!currentExercise) return;
@@ -105,19 +120,28 @@ export default function WorkoutPage() {
     else           { setCurrentState('SET_REST');   startTimer(60); }
   };
 
-  const handleSaveLoad = async () => {
-    if (!newLoadInput.trim() || !currentExercise || !user) return;
-    setIsSavingLoad(true);
-    const { error } = await supabase.from('user_exercise_settings').upsert(
-      { user_id: user.id, exercise_id: currentExercise.id, current_load: newLoadInput.trim() },
-      { onConflict: 'user_id,exercise_id' }
-    );
-    setIsSavingLoad(false);
+  function togglePendingBand(name: string) {
+    setPendingBands(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name]);
+  }
+
+  async function handleSaveBands() {
+    if (!currentExercise) return;
+    setIsSavingBands(true);
+    const { error } = await supabase.from('exercises').update({ selected_bands: pendingBands }).eq('id', currentExercise.id);
+    setIsSavingBands(false);
     if (!error) {
-      setExercises(prev => prev.map(ex => ex.id === currentExercise.id ? { ...ex, user_exercise_settings: [{ current_load: newLoadInput.trim() }] } : ex));
-      setNewLoadInput(''); setLoadSaved(true); setTimeout(() => setLoadSaved(false), 2000);
+      setExercises(prev => prev.map(ex => ex.id === currentExercise.id ? { ...ex, selected_bands: pendingBands } : ex));
+      setBandsSaved(true);
     }
-  };
+  }
+
+  function handleNoChanges() {
+    handleSkip();
+  }
+
+  function proceedToNext() {
+    handleSkip();
+  }
 
   if (isLoadingExercises) return (
     <div className="min-h-screen bg-transparent flex items-center justify-center text-white">
@@ -158,30 +182,22 @@ export default function WorkoutPage() {
 
       <main className="flex-1 flex flex-col relative z-10 overflow-y-auto">
 
-        {/* EXERCISE ACTIVE */}
+        {/* ── EXERCISE ACTIVE ── */}
         {currentState === 'EXERCISE_ACTIVE' && currentExercise && (
           <div className="flex flex-col min-h-full">
-
-            {/* 16:9 topbillede */}
             {currentExercise.image_url && (
               <div className="w-full flex-shrink-0" style={{ aspectRatio: '16/9' }}>
                 <img src={currentExercise.image_url} alt={currentExercise.name} className="w-full h-full object-cover" />
               </div>
             )}
-
             <div className="flex-1 flex flex-col p-6">
               <div className="text-center mb-4">
                 {currentExercise.category && (
-                  <span className="inline-block px-3 py-1 bg-white/10 border border-white/10 text-orange-400 text-xs font-bold uppercase rounded-lg mb-3 tracking-wider">
-                    {currentExercise.category}
-                  </span>
+                  <span className="inline-block px-3 py-1 bg-white/10 border border-white/10 text-orange-400 text-xs font-bold uppercase rounded-lg mb-3 tracking-wider">{currentExercise.category}</span>
                 )}
                 <h2 className="text-4xl font-bold leading-tight tracking-tighter">{currentExercise.name}</h2>
               </div>
-
-              {/* Udstyrskort */}
               <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-5 border border-white/10 shadow-lg mb-4">
-
                 {currentExercise.selected_bands?.length > 0 && (
                   <div className="mb-4 pb-4 border-b border-white/10">
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Elastikker</p>
@@ -190,21 +206,18 @@ export default function WorkoutPage() {
                     </div>
                   </div>
                 )}
-
                 {currentExercise.door_anchor_position && (
                   <div className="mb-4 pb-4 border-b border-white/10">
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Døranker</p>
                     <Tag label={ANCHOR_LABEL[currentExercise.door_anchor_position] ?? currentExercise.door_anchor_position} color="bg-blue-500/20 border-blue-500/30 text-blue-300" />
                   </div>
                 )}
-
                 {currentExercise.grip_type && (
                   <div className="mb-4 pb-4 border-b border-white/10">
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Grib</p>
                     <Tag label={GRIP_LABEL[currentExercise.grip_type] ?? currentExercise.grip_type} color="bg-purple-500/20 border-purple-500/30 text-purple-300" />
                   </div>
                 )}
-
                 <div className="flex justify-between items-center">
                   <div>
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">Mål</p>
@@ -218,8 +231,6 @@ export default function WorkoutPage() {
                   )}
                 </div>
               </div>
-
-              {/* Knapper */}
               <div className="flex flex-col gap-3 mt-auto">
                 {currentExercise.is_time_based ? (
                   <>
@@ -245,9 +256,9 @@ export default function WorkoutPage() {
           </div>
         )}
 
-        {/* SET REST */}
+        {/* ── SET REST ── */}
         {currentState === 'SET_REST' && (
-          <div className="w-full flex-col flex h-full items-center justify-center p-6 animate-in zoom-in-95 duration-300">
+          <div className="flex-col flex h-full items-center justify-center p-6 animate-in zoom-in-95 duration-300" style={{ minHeight: 'calc(100vh - 73px)' }}>
             <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400 mb-4 bg-white/5 px-4 py-1 rounded-full border border-white/10">
               Pause inden sæt {currentSet + 1}
             </h3>
@@ -266,34 +277,95 @@ export default function WorkoutPage() {
           </div>
         )}
 
-        {/* TRANSITION */}
-        {currentState === 'TRANSITION' && (
-          <div className="w-full flex-col flex h-full justify-between p-6 animate-in slide-in-from-right">
-            <div className="text-center pt-8">
-              <p className="text-[10px] text-blue-400 uppercase font-bold tracking-widest mb-2 px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full inline-block">
-                {isLastExercise ? 'Sidste transition' : 'Næste øvelse'}
-              </p>
-              <h3 className="text-3xl font-bold mb-8 tracking-tighter">
-                {!isLastExercise && exercises[currentExerciseIndex + 1] ? exercises[currentExerciseIndex + 1].name : 'Færdig!'}
-              </h3>
-              <div className="text-[80px] font-mono font-bold text-white mb-2">{timer}</div>
-              <p className="text-gray-400 text-sm uppercase tracking-widest">Sekunder til start</p>
-            </div>
-            <div className="mt-8 bg-white/5 backdrop-blur-xl border border-white/20 p-6 rounded-3xl shadow-2xl relative overflow-hidden">
-              <div className="absolute inset-0 bg-gradient-to-tr from-orange-500/10 to-transparent pointer-events-none" />
-              <h4 className="font-bold text-orange-400 mb-2 relative z-10 uppercase tracking-wider text-sm">Smart Progression</h4>
-              <p className="text-white text-lg font-bold mb-1 relative z-10">Føltes det for nemt?</p>
-              <p className="text-gray-400 text-sm mb-4 relative z-10">Notér hvilken modstand du brugte.</p>
-              <div className="flex gap-2 relative z-10">
-                <input type="text" placeholder="Fx 'Rød + Sort'" value={newLoadInput} onChange={e => setNewLoadInput(e.target.value)}
-                  className="flex-1 bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-orange-500 text-white placeholder-gray-500" />
-                <button onClick={handleSaveLoad} disabled={isSavingLoad || !newLoadInput.trim()}
-                  className="bg-white/10 hover:bg-white/20 px-4 rounded-2xl border border-white/10 font-bold transition-colors disabled:opacity-50 min-w-[56px] flex items-center justify-center">
-                  {isSavingLoad ? <span className="text-gray-400 text-xs">...</span> : loadSaved ? <Check className="w-5 h-5 text-green-400" /> : <span className="text-orange-400 text-sm font-bold">GEM</span>}
-                </button>
+        {/* ── TRANSITION: Elastikskift ── */}
+        {currentState === 'TRANSITION' && currentExercise && (
+          <div className="flex flex-col p-6 animate-in slide-in-from-bottom-4 duration-300" style={{ minHeight: 'calc(100vh - 73px)' }}>
+
+            {/* Countdown */}
+            <div className="flex items-center justify-between mb-6 pt-2">
+              <div>
+                <p className="text-[10px] text-blue-400 uppercase font-bold tracking-widest">
+                  {isLastExercise ? 'Træning slut' : 'Næste øvelse'}
+                </p>
+                <p className="text-xl font-bold mt-0.5">
+                  {!isLastExercise && exercises[currentExerciseIndex + 1] ? exercises[currentExerciseIndex + 1].name : 'Færdig!'}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] text-gray-400 uppercase tracking-widest">Start om</p>
+                <p className="text-3xl font-mono font-bold text-orange-500">{timer}s</p>
               </div>
             </div>
-            <button onClick={handleSkip} className="w-full bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold py-5 rounded-2xl flex items-center justify-center gap-2 mt-8 active:scale-95 transition-colors mb-4">
+
+            {/* Elastikskift-kort */}
+            <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-2xl flex-1">
+              <div className="flex items-start justify-between mb-1">
+                <div>
+                  <h3 className="text-lg font-bold">Vil du skifte elastikker?</h3>
+                  <p className="text-xs text-gray-400 mt-1">For <span className="text-orange-400 font-semibold">{currentExercise.name}</span></p>
+                </div>
+                {bandsSaved && (
+                  <span className="flex items-center gap-1 text-green-400 text-xs font-bold bg-green-400/10 border border-green-400/20 px-2 py-1 rounded-full">
+                    <Check className="w-3 h-3" /> Gemt
+                  </span>
+                )}
+              </div>
+
+              {userBands.length === 0 ? (
+                <p className="text-gray-500 text-sm italic mt-4">Ingen elastikker oprettet — gå til Indstillinger → Udstyr.</p>
+              ) : (
+                <div className="mt-4">
+                  {/* Nuværende valg */}
+                  {currentExercise.selected_bands?.length > 0 && (
+                    <div className="mb-3">
+                      <p className="text-[11px] text-gray-500 uppercase tracking-wider mb-2">Nuværende</p>
+                      <div className="flex flex-wrap gap-2">
+                        {currentExercise.selected_bands.map((b, i) => (
+                          <span key={i} className="px-3 py-1 rounded-full text-xs font-bold bg-white/10 border border-white/10 text-gray-300">{b}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-gray-500 uppercase tracking-wider mb-2 mt-4">Vælg nye</p>
+                  <div className="flex flex-wrap gap-2 mb-6">
+                    {userBands.map(b => {
+                      const sel = pendingBands.includes(b.name);
+                      return (
+                        <button key={b.id} type="button" onClick={() => togglePendingBand(b.name)}
+                          className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors active:scale-95 ${sel ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                          {b.name}
+                        </button>
+                      );
+                    })}
+                    {/* Fjern alle */}
+                    {pendingBands.length > 0 && (
+                      <button type="button" onClick={() => setPendingBands([])}
+                        className="px-3 py-2 rounded-full text-xs font-bold border border-white/10 bg-white/5 text-gray-500 hover:text-red-400 transition-colors flex items-center gap-1">
+                        <X className="w-3 h-3" /> Ryd
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Gem / Nej */}
+                  <div className="flex gap-3">
+                    <button onClick={handleNoChanges}
+                      className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 font-bold py-4 rounded-2xl transition-colors active:scale-95">
+                      NEJ TAK
+                    </button>
+                    <button onClick={async () => { await handleSaveBands(); }}
+                      disabled={isSavingBands}
+                      className="flex-2 flex-1 bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 transition-colors active:scale-95 disabled:opacity-50">
+                      {isSavingBands ? 'GEMMER...' : bandsSaved ? '✓ GEMT' : 'GEM'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Start næste */}
+            <button onClick={proceedToNext}
+              className="w-full bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold py-5 rounded-2xl flex items-center justify-center gap-2 mt-4 active:scale-95 transition-colors">
               START NÆSTE NU
             </button>
           </div>
