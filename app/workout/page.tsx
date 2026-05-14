@@ -37,6 +37,7 @@ export default function WorkoutPage() {
   const { requestWakeLock, releaseWakeLock } = useWakeLock();
   const searchParams  = useSearchParams();
   const dagLabel      = searchParams.get('dag');
+  const idsParam      = searchParams.get('ids');
 
   const [user, setUser]                             = useState<User | null>(null);
   const [exercises, setExercises]                   = useState<Exercise[]>([]);
@@ -74,7 +75,16 @@ export default function WorkoutPage() {
           ? supabase.from('user_bands').select('id, name').eq('user_id', user.id).order('created_at', { ascending: true })
           : Promise.resolve({ data: [] }),
       ]);
-      if (!exRes.error && exRes.data) setExercises(exRes.data as Exercise[]);
+      if (!exRes.error && exRes.data) {
+        const allEx = exRes.data as Exercise[];
+        if (idsParam) {
+          const ids = idsParam.split(',');
+          const ordered = ids.map(id => allEx.find(e => e.id === id)).filter(Boolean) as Exercise[];
+          setExercises(ordered);
+        } else {
+          setExercises(allEx);
+        }
+      }
       if (bandRes.data) setUserBands(bandRes.data as Band[]);
       setIsLoadingExercises(false);
     })();

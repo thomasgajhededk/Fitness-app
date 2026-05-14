@@ -193,7 +193,7 @@ export default function HomePage() {
                           ✓ Godt arbejde!
                         </div>
                       ) : (
-                        <Link href={`/workout?dag=${encodeURIComponent(day.label)}`}
+                        <Link href={`/workout?dag=${encodeURIComponent(day.label)}&ids=${day.exercises.map(e => e.id).join(',')}`}
                           className="block text-center w-full bg-white/10 hover:bg-white/20 text-white border border-white/10 font-bold py-4 rounded-2xl active:scale-95 transition-colors">
                           START {day.label.toUpperCase()}
                         </Link>
