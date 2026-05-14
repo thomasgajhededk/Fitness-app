@@ -35,7 +35,13 @@ function getMondayISO(): string {
 export default function HomePage() {
   const [user, setUser]             = useState<User | null>(null);
   const [exercises, setExercises]   = useState<Exercise[]>([]);
-  const [program, setProgram]       = useState<ProgramDay[] | null>(null);
+  const [program, setProgram]       = useState<ProgramDay[] | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const saved = localStorage.getItem('jaafit_program');
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
   const [isGenerating, setIsGenerating] = useState(false);
   const [hasLoaded, setHasLoaded]   = useState(false);
   const [completedDays, setCompletedDays] = useState<string[]>([]);
@@ -76,7 +82,9 @@ export default function HomePage() {
     if (exercises.length === 0) return;
     setIsGenerating(true);
     setTimeout(() => {
-      setProgram(buildProgram(exercises));
+      const newProgram = buildProgram(exercises);
+      setProgram(newProgram);
+      localStorage.setItem('jaafit_program', JSON.stringify(newProgram));
       setIsGenerating(false);
     }, 600);
   }
