@@ -123,20 +123,57 @@ export default function SettingsPage() {
     reader.readAsDataURL(file);
   }
 
+  // Komprimerer billedet til JPEG med max 1920px bredde — sparer storage og hastighed
+  async function compressImage(file: File): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const maxWidth = 1920;
+          const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+          const w = Math.round(img.width * scale);
+          const h = Math.round(img.height * scale);
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) { reject(new Error('Canvas ikke understøttet')); return; }
+          ctx.drawImage(img, 0, 0, w, h);
+          canvas.toBlob(
+            (blob) => blob ? resolve(blob) : reject(new Error('Komprimering fejlede')),
+            'image/jpeg',
+            0.85
+          );
+        };
+        img.onerror = () => reject(new Error('Billedet kunne ikke læses'));
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => reject(new Error('Filen kunne ikke læses'));
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function uploadImage(userId: string): Promise<string | null> {
     if (!imageFile) return null;
-    const ext  = imageFile.name.split('.').pop()?.toLowerCase() ?? 'jpg';
-    const path = `${userId}/${Date.now()}.${ext}`;
-    const { error } = await supabase.storage
-      .from('exercise-images')
-      .upload(path, imageFile, { contentType: imageFile.type, upsert: true });
-    if (error) {
-      console.error('Upload fejl:', error.message);
-      setModalError('Billede kunne ikke uploades: ' + error.message);
+    try {
+      const compressed = await compressImage(imageFile);
+      const path = `${userId}/${Date.now()}.jpg`;
+      const { error } = await supabase.storage
+        .from('exercise-images')
+        .upload(path, compressed, { contentType: 'image/jpeg', upsert: true });
+      if (error) {
+        console.error('Upload fejl:', error.message);
+        setModalError('Billede kunne ikke uploades: ' + error.message);
+        return null;
+      }
+      const { data } = supabase.storage.from('exercise-images').getPublicUrl(path);
+      return data.publicUrl;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Ukendt fejl';
+      console.error('Image processing fejl:', msg);
+      setModalError('Kunne ikke behandle billede: ' + msg);
       return null;
     }
-    const { data } = supabase.storage.from('exercise-images').getPublicUrl(path);
-    return data.publicUrl;
   }
 
   async function handleSave() {
