@@ -125,10 +125,16 @@ export default function SettingsPage() {
 
   async function uploadImage(userId: string): Promise<string | null> {
     if (!imageFile) return null;
-    const ext  = imageFile.name.split('.').pop() ?? 'jpg';
+    const ext  = imageFile.name.split('.').pop()?.toLowerCase() ?? 'jpg';
     const path = `${userId}/${Date.now()}.${ext}`;
-    const { error } = await supabase.storage.from('exercise-images').upload(path, imageFile, { contentType: imageFile.type, upsert: true });
-    if (error) return null;
+    const { error } = await supabase.storage
+      .from('exercise-images')
+      .upload(path, imageFile, { contentType: imageFile.type, upsert: true });
+    if (error) {
+      console.error('Upload fejl:', error.message);
+      setModalError('Billede kunne ikke uploades: ' + error.message);
+      return null;
+    }
     const { data } = supabase.storage.from('exercise-images').getPublicUrl(path);
     return data.publicUrl;
   }
