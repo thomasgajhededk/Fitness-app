@@ -534,7 +534,7 @@ export default function SettingsPage() {
           <Link href="/" className="flex flex-col items-center opacity-40 hover:opacity-100 transition-opacity text-white">
             <Home className="w-6 h-6 mb-1" /><span className="text-[10px] uppercase font-bold tracking-widest">Hjem</span>
           </Link>
-          <Link href="/workout" className="flex flex-col items-center opacity-40 hover:opacity-100 transition-opacity text-white">
+          <Link href="/workout/start" className="flex flex-col items-center opacity-40 hover:opacity-100 transition-opacity text-white">
             <div className="w-12 h-12 bg-white/10 hover:bg-white/20 border border-white/10 rounded-full flex items-center justify-center -mt-6 transition-colors">
               <Activity className="w-6 h-6" />
             </div>
