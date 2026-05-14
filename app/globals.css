@@ -43,3 +43,31 @@
   --font-label-lg: var(--font-space-grotesk), sans-serif;
   --font-label-sm: var(--font-space-grotesk), sans-serif;
 }
+
+/* ── Native app feel — bloker zoom, kontekstmenuer og tekst-selektion ── */
+html, body {
+  /* Bloker pinch-zoom og double-tap zoom på iOS */
+  touch-action: manipulation;
+  /* Bloker pull-to-refresh og overscroll */
+  overscroll-behavior: none;
+  /* Bloker tekst-selektion */
+  -webkit-user-select: none;
+  user-select: none;
+  /* Bloker callout (lang tryk på links/billeder) */
+  -webkit-touch-callout: none;
+  /* Bloker highlight ved tryk */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Tillad tekst-selektion i input/textarea */
+input, textarea {
+  -webkit-user-select: text;
+  user-select: text;
+  /* Bloker iOS auto-zoom på input under 16px */
+  font-size: 16px;
+}
+
+/* Smooth scrolling for hovedindhold */
+main {
+  -webkit-overflow-scrolling: touch;
+}

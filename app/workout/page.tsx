@@ -88,7 +88,7 @@ export default function WorkoutPage() {
       if (bandRes.data) setUserBands(bandRes.data as Band[]);
       setIsLoadingExercises(false);
     })();
-  }, []);
+  }, [idsParam]);
 
   useEffect(() => { requestWakeLock(); return () => { releaseWakeLock(); }; }, [requestWakeLock, releaseWakeLock]);
 
@@ -115,7 +115,6 @@ export default function WorkoutPage() {
     if (currentState === 'TRANSITION' && currentExercise) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPendingBands(currentExercise.selected_bands ?? []);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setBandsSaved(false);
     }
   }, [currentState, currentExercise]);
@@ -155,8 +154,12 @@ export default function WorkoutPage() {
 
   useEffect(() => {
     if (!isTimerRunning) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (timer <= 0) { setIsTimerRunning(false); handleTimerFinishRef.current(); return; }
+    if (timer <= 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setIsTimerRunning(false);
+      handleTimerFinishRef.current();
+      return;
+    }
     const id = setInterval(() => setTimer(prev => prev - 1), 1000);
     return () => clearInterval(id);
   }, [isTimerRunning, timer]);
