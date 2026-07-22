@@ -6,7 +6,7 @@ import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap,
 import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 
-type Exercise   = { id: string; name: string; category: string | null; selected_bands: string[]; door_anchor_position: string | null; grip_type: string | null };
+type Exercise   = { id: string; name: string; category: string | null; exercise_type: string | null; selected_bands: string[]; door_anchor_position: string | null; grip_type: string | null };
 type Band       = { id: string; name: string };
 type ProgramDay = { label: string; exercises: Exercise[] };
 
@@ -73,6 +73,8 @@ export default function HomePage() {
   const [availBands, setAvailBands]     = useState<string[]>([]);
   const [hasDoorAnchor, setHasDoorAnchor] = useState(false);
   const [availGrips, setAvailGrips]     = useState<string[]>([]);
+  const [quickBudget, setQuickBudget]   = useState<25 | 45>(45);
+  const [quickPool, setQuickPool]       = useState<Exercise[]>([]);
   const [quickExercises, setQuickExercises] = useState<Exercise[] | null>(null);
 
   const loadCompletedDays = useCallback(async (uid: string) => {
@@ -86,7 +88,7 @@ export default function HomePage() {
       setUser(user);
       if (user) {
         const [exRes, bandRes] = await Promise.all([
-          supabase.from('exercises').select('id, name, category, selected_bands, door_anchor_position, grip_type').order('name'),
+          supabase.from('exercises').select('id, name, category, exercise_type, selected_bands, door_anchor_position, grip_type').order('name'),
           supabase.from('user_bands').select('id, name').eq('user_id', user.id).order('created_at', { ascending: true }),
           loadCompletedDays(user.id),
         ]);
@@ -116,8 +118,14 @@ export default function HomePage() {
 
   function generateQuick() {
     const filtered = filterByEquipment(exercises, availBands, hasDoorAnchor, availGrips);
-    const picked   = shuffle(filtered).slice(0, 9);
-    setQuickExercises(picked);
+    const target   = quickBudget === 45 ? 9 : 5;
+    const s        = shuffle(filtered);
+    // Ved 25 min: tag compound-øvelser først, ellers helt tilfældigt
+    const ordered  = quickBudget === 25
+      ? [...s.filter(e => e.exercise_type === 'compound'), ...s.filter(e => e.exercise_type !== 'compound')]
+      : s;
+    setQuickExercises(ordered.slice(0, target));
+    setQuickPool(filtered);
   }
 
   function toggleBand(name: string) {
@@ -202,6 +210,22 @@ export default function HomePage() {
 
             <div className="p-6 flex flex-col gap-5">
 
+              {/* Tid */}
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Tid</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([25, 45] as const).map(b => {
+                    const sel = quickBudget === b;
+                    return (
+                      <button key={b} type="button" onClick={() => { setQuickBudget(b); setQuickExercises(null); }}
+                        className={`py-2.5 rounded-xl text-sm font-bold border transition-colors ${sel ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                        {b === 25 ? '25 min (kort)' : '45 min (fuld)'}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Elastikker */}
               {userBands.length > 0 && (
                 <div>
@@ -249,7 +273,7 @@ export default function HomePage() {
               {!quickExercises && (
                 <button onClick={generateQuick}
                   className="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-4 rounded-2xl shadow-lg shadow-yellow-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
-                  <Zap className="w-5 h-5" /> FIND 9 ØVELSER
+                  <Zap className="w-5 h-5" /> FIND {quickBudget === 45 ? 9 : 5} ØVELSER
                 </button>
               )}
             </div>
@@ -290,7 +314,7 @@ export default function HomePage() {
                         <RotateCcw className="w-4 h-4" /> Lav ny
                       </button>
                       <Link
-                        href={`/workout?ids=${quickExercises.map(e => e.id).join(',')}`}
+                        href={`/workout?ids=${quickExercises.map(e => e.id).join(',')}&pool=${quickPool.map(e => e.id).join(',')}&budget=${quickBudget}`}
                         className="flex-[2] bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
                         <Zap className="w-5 h-5" /> START
                       </Link>

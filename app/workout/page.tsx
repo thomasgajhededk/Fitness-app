@@ -31,15 +31,37 @@ const ANCHOR_LABEL: Record<string, string> = { top: 'Øverst', middle: 'Midden',
 const GRIP_LABEL: Record<string, string>   = { stang: 'Stang', grib: 'Grib', ingen_grib: 'Uden grib', 'ankelbånd': 'Ankelbånd' };
 const CATEGORY_ORDER = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
 
+function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
+
 // Bygger den endelige træningsliste ud fra fravalgte muskelgrupper og tidsbudget.
-// 25 min = kort: compound-øvelser først, fyld op med resten til ~5 øvelser. 45 min = alle.
-function buildWorkout(all: Exercise[], excludedCategories: string[], timeBudget: 25 | 45): Exercise[] {
-  const filtered = all.filter(ex => !ex.category || !excludedCategories.includes(ex.category));
-  if (timeBudget === 45) return filtered;
-  const targetCount = Math.max(3, Math.round(filtered.length * 25 / 45));
-  const compounds = filtered.filter(ex => ex.exercise_type === 'compound');
-  const rest      = filtered.filter(ex => ex.exercise_type !== 'compound');
-  return [...compounds, ...rest].slice(0, targetCount);
+// 25 min = kort (~55% af øvelserne, compound først). 45 min = fuldt antal (fullCount).
+// Hvis fravalg gør listen for kort, fyldes op fra `pool` med øvelser i de tilvalgte muskelgrupper.
+function buildWorkout(
+  day: Exercise[],
+  pool: Exercise[],
+  excludedCategories: string[],
+  timeBudget: 25 | 45,
+  fullCount: number,
+): Exercise[] {
+  const allowed = (ex: Exercise) => !ex.category || !excludedCategories.includes(ex.category);
+  const targetCount = timeBudget === 45 ? fullCount : Math.max(3, Math.round(fullCount * 25 / 45));
+  const compoundFirst = (arr: Exercise[]) =>
+    timeBudget === 25 ? [...arr.filter(e => e.exercise_type === 'compound'), ...arr.filter(e => e.exercise_type !== 'compound')] : arr;
+
+  // Muskelgrupper der stadig er valgt (findes i dagens øvelser og ikke fravalgt)
+  const dayCats = Array.from(new Set(day.map(e => e.category).filter(Boolean))) as string[];
+  const selectedCats = dayCats.filter(c => !excludedCategories.includes(c));
+
+  let list = compoundFirst(day.filter(allowed)).slice(0, targetCount);
+
+  // Fyld op til targetCount fra puljen med øvelser i de tilvalgte muskelgrupper
+  if (list.length < targetCount) {
+    const have = new Set(list.map(e => e.id));
+    let candidates = pool.filter(ex => !have.has(ex.id) && ex.category && selectedCats.includes(ex.category));
+    candidates = compoundFirst(shuffle(candidates));
+    list = [...list, ...candidates].slice(0, targetCount);
+  }
+  return list;
 }
 
 function Tag({ label, color }: { label: string; color: string }) {
@@ -51,9 +73,12 @@ export default function WorkoutPage() {
   const searchParams  = useSearchParams();
   const dagLabel      = searchParams.get('dag');
   const idsParam      = searchParams.get('ids');
+  const poolParam     = searchParams.get('pool');
+  const budgetParam   = searchParams.get('budget');
 
   const [user, setUser]                             = useState<User | null>(null);
   const [allExercises, setAllExercises]             = useState<Exercise[]>([]);
+  const [poolExercises, setPoolExercises]           = useState<Exercise[]>([]);
   const [exercises, setExercises]                   = useState<Exercise[]>([]);
   const [userBands, setUserBands]                   = useState<Band[]>([]);
   const [isLoadingExercises, setIsLoadingExercises] = useState(true);
@@ -67,7 +92,7 @@ export default function WorkoutPage() {
   const [bandsSaved, setBandsSaved]                 = useState(false);
 
   // Opsætning (tid + muskelgrupper)
-  const [timeBudget, setTimeBudget]                 = useState<25 | 45>(45);
+  const [timeBudget, setTimeBudget]                 = useState<25 | 45>(budgetParam === '25' ? 25 : 45);
   const [excludedCategories, setExcludedCategories] = useState<string[]>([]);
   // Valgt varighed for tidsbaserede øvelser (30 / 60 / 120 sek)
   const [chosenTimeSecs, setChosenTimeSecs]         = useState(45);
@@ -82,7 +107,9 @@ export default function WorkoutPage() {
 
   // Muskelgrupper til stede i denne træning (sorteret efter fast rækkefølge)
   const availableCategories = CATEGORY_ORDER.filter(c => allExercises.some(ex => ex.category === c));
-  const previewCount = buildWorkout(allExercises, excludedCategories, timeBudget).length;
+  // Fuldt antal øvelser: hurtig træning sigter mod 9, program-dag mod dagens antal.
+  const fullCount = poolParam ? Math.min(9, poolExercises.length) : allExercises.length;
+  const previewCount = buildWorkout(allExercises, poolExercises, excludedCategories, timeBudget, fullCount).length;
 
   // Nulstil valgt varighed når vi skifter til en ny øvelse
   useEffect(() => {
@@ -113,11 +140,19 @@ export default function WorkoutPage() {
         } else {
           setAllExercises(allEx);
         }
+        // Pulje til opfyldning: hurtig træning sender udstyrs-matchende øvelser via ?pool=,
+        // ellers bruges hele biblioteket (som 3-dages programmet).
+        if (poolParam) {
+          const poolIds = new Set(poolParam.split(','));
+          setPoolExercises(allEx.filter(e => poolIds.has(e.id)));
+        } else {
+          setPoolExercises(allEx);
+        }
       }
       if (bandRes.data) setUserBands(bandRes.data as Band[]);
       setIsLoadingExercises(false);
     })();
-  }, [idsParam]);
+  }, [idsParam, poolParam]);
 
   useEffect(() => { requestWakeLock(); return () => { releaseWakeLock(); }; }, [requestWakeLock, releaseWakeLock]);
 
@@ -218,7 +253,7 @@ export default function WorkoutPage() {
 
   // Start træningen ud fra opsætningen (tid + muskelgrupper)
   const handleStartWorkout = () => {
-    const list = buildWorkout(allExercises, excludedCategories, timeBudget);
+    const list = buildWorkout(allExercises, poolExercises, excludedCategories, timeBudget, fullCount);
     if (list.length === 0) return;
     setExercises(list);
     setCurrentExerciseIndex(0);
