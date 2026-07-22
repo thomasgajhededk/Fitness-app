@@ -145,8 +145,7 @@ export default function HomePage() {
     setQuickExercises(null);
   }
 
-  const quickEquipFiltered = filterByEquipment(exercises, availBands, hasDoorAnchor, availGrips);
-  const quickCats = CATEGORY_ORDER.filter(c => quickEquipFiltered.some(e => e.category === c));
+  const quickCats = CATEGORY_ORDER.filter(c => exercises.some(e => e.category === c));
 
   const initials     = user?.email ? user.email.slice(0, 2).toUpperCase() : '??';
   const allDays      = program ?? [];
