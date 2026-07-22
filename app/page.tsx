@@ -17,6 +17,8 @@ const GRIP_OPTS = [
   { value: 'ankelbånd',  label: 'Ankelbånd' },
 ];
 
+const CATEGORY_ORDER = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
+
 function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
 
 function buildProgram(exercises: Exercise[]): ProgramDay[] {
@@ -74,6 +76,7 @@ export default function HomePage() {
   const [hasDoorAnchor, setHasDoorAnchor] = useState(false);
   const [availGrips, setAvailGrips]     = useState<string[]>([]);
   const [quickBudget, setQuickBudget]   = useState<25 | 45>(45);
+  const [excludedQuickCats, setExcludedQuickCats] = useState<string[]>([]);
   const [quickPool, setQuickPool]       = useState<Exercise[]>([]);
   const [quickExercises, setQuickExercises] = useState<Exercise[] | null>(null);
 
@@ -117,7 +120,8 @@ export default function HomePage() {
   }
 
   function generateQuick() {
-    const filtered = filterByEquipment(exercises, availBands, hasDoorAnchor, availGrips);
+    const filtered = filterByEquipment(exercises, availBands, hasDoorAnchor, availGrips)
+      .filter(ex => !ex.category || !excludedQuickCats.includes(ex.category));
     const target   = quickBudget === 45 ? 9 : 5;
     const s        = shuffle(filtered);
     // Ved 25 min: tag compound-øvelser først, ellers helt tilfældigt
@@ -136,6 +140,13 @@ export default function HomePage() {
     setAvailGrips(prev => prev.includes(val) ? prev.filter(g => g !== val) : [...prev, val]);
     setQuickExercises(null);
   }
+  function toggleQuickCat(cat: string) {
+    setExcludedQuickCats(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+    setQuickExercises(null);
+  }
+
+  const quickEquipFiltered = filterByEquipment(exercises, availBands, hasDoorAnchor, availGrips);
+  const quickCats = CATEGORY_ORDER.filter(c => quickEquipFiltered.some(e => e.category === c));
 
   const initials     = user?.email ? user.email.slice(0, 2).toUpperCase() : '??';
   const allDays      = program ?? [];
@@ -268,6 +279,24 @@ export default function HomePage() {
                   })}
                 </div>
               </div>
+
+              {/* Muskelgrupper */}
+              {quickCats.length > 0 && (
+                <div>
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Muskelgrupper</label>
+                  <div className="flex flex-wrap gap-2">
+                    {quickCats.map(c => {
+                      const sel = !excludedQuickCats.includes(c);
+                      return (
+                        <button key={c} type="button" onClick={() => toggleQuickCat(c)}
+                          className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors ${sel ? 'bg-green-500 border-green-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                          {c}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Generér-knap */}
               {!quickExercises && (
