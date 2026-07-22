@@ -9,13 +9,13 @@ import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 
 type WeightLog = { id: string; weight_kg: number; log_date: string };
-type Exercise  = { id: string; name: string; category: string | null; recommended_reps: string | null; is_time_based: boolean; door_anchor_position: string | null; grip_type: string | null; selected_bands: string[]; image_url: string | null };
+type Exercise  = { id: string; name: string; category: string | null; recommended_reps: string | null; is_time_based: boolean; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null; selected_bands: string[]; image_url: string | null };
 type Band      = { id: string; name: string };
 
 const CATEGORIES  = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
 const ANCHOR_OPTS = [{ value: 'top', label: 'Øverst' }, { value: 'middle', label: 'Midden' }, { value: 'bottom', label: 'Bunden' }];
 const GRIP_OPTS   = [{ value: 'stang', label: 'Stang' }, { value: 'grib', label: 'Grib' }, { value: 'ingen_grib', label: 'Uden grib' }, { value: 'ankelbånd', label: 'Ankelbånd' }];
-const EMPTY_FORM  = { name: '', category: '', recommended_reps: '', is_time_based: false, use_door_anchor: false, door_anchor_position: 'top', use_grip: false, grip_type: 'grib', selected_bands: [] as string[] };
+const EMPTY_FORM  = { name: '', category: '', recommended_reps: '', is_time_based: false, exercise_type: '' as '' | 'compound' | 'isolation', use_door_anchor: false, door_anchor_position: 'top', use_grip: false, grip_type: 'grib', selected_bands: [] as string[] };
 
 type ModalMode = 'create' | 'edit';
 
@@ -65,7 +65,7 @@ export default function SettingsPage() {
 
   async function loadExercises() {
     setIsLoadingEx(true);
-    const { data } = await supabase.from('exercises').select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url').order('name');
+    const { data } = await supabase.from('exercises').select('id, name, category, recommended_reps, is_time_based, exercise_type, door_anchor_position, grip_type, selected_bands, image_url').order('name');
     if (data) setExercises(data as Exercise[]);
     setIsLoadingEx(false);
   }
@@ -92,6 +92,7 @@ export default function SettingsPage() {
       category: ex.category ?? '',
       recommended_reps: ex.recommended_reps ?? '',
       is_time_based: ex.is_time_based,
+      exercise_type: (ex.exercise_type ?? '') as '' | 'compound' | 'isolation',
       use_door_anchor: !!ex.door_anchor_position,
       door_anchor_position: ex.door_anchor_position ?? 'top',
       use_grip: !!ex.grip_type,
@@ -193,6 +194,7 @@ export default function SettingsPage() {
       category:             form.category || null,
       recommended_reps:     form.recommended_reps || null,
       is_time_based:        form.is_time_based,
+      exercise_type:        form.exercise_type || null,
       door_anchor_position: form.use_door_anchor ? form.door_anchor_position : null,
       grip_type:            form.use_grip        ? form.grip_type            : null,
       selected_bands:       form.selected_bands,
@@ -201,14 +203,14 @@ export default function SettingsPage() {
 
     if (modalMode === 'create') {
       const { data, error } = await supabase.from('exercises').insert({ ...payload, user_id: user.id })
-        .select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url').single();
+        .select('id, name, category, recommended_reps, is_time_based, exercise_type, door_anchor_position, grip_type, selected_bands, image_url').single();
       setIsSaving(false);
       if (error) { setModalError('Fejl: ' + error.message); return; }
       if (data) setExercises(prev => [...prev, data as Exercise].sort((a, b) => a.name.localeCompare(b.name, 'da')));
     } else {
       if (!editingId) return;
       const { data, error } = await supabase.from('exercises').update(payload).eq('id', editingId)
-        .select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url').single();
+        .select('id, name, category, recommended_reps, is_time_based, exercise_type, door_anchor_position, grip_type, selected_bands, image_url').single();
       setIsSaving(false);
       if (error) { setModalError('Fejl: ' + error.message); return; }
       if (data) setExercises(prev => prev.map(ex => ex.id === editingId ? data as Exercise : ex));
@@ -351,6 +353,21 @@ export default function SettingsPage() {
                   <div className="w-4 h-4 rounded-full bg-white shadow" />
                 </div>
               </button>
+
+              {/* Type: compound / isolation */}
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Type</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([['compound', 'Compound'], ['isolation', 'Isolation']] as const).map(([val, label]) => (
+                    <button key={val} type="button"
+                      onClick={() => setForm({ ...form, exercise_type: form.exercise_type === val ? '' : val })}
+                      className={`py-2.5 rounded-xl text-sm font-bold border transition-colors ${form.exercise_type === val ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-gray-500 mt-2">Compound = store øvelser (flere muskler). Bruges til korte pas (25 min).</p>
+              </div>
 
               {/* ── Udstyr ── */}
               <div className="border-t border-white/10 pt-5">
@@ -511,7 +528,12 @@ export default function SettingsPage() {
                     <div className="p-5 flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <p className="font-bold text-lg">{ex.name}</p>
-                        {ex.category && <p className="text-xs text-orange-400 uppercase font-semibold mt-1">{ex.category}</p>}
+                        <div className="flex items-center gap-2 mt-1">
+                          {ex.category && <p className="text-xs text-orange-400 uppercase font-semibold">{ex.category}</p>}
+                          {ex.exercise_type
+                            ? <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-gray-300">{ex.exercise_type === 'compound' ? 'Compound' : 'Isolation'}</span>
+                            : <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-yellow-500/10 border border-yellow-500/20 text-yellow-500">Type mangler</span>}
+                        </div>
                         <p className="text-xs text-gray-500 mt-1 truncate">{equipmentSummary(ex)}</p>
                       </div>
                       <div className="flex gap-2 flex-shrink-0">

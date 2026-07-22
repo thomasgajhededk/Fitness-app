@@ -9,7 +9,7 @@ import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 import { ArrowLeft, Play, Pause, Check, FastForward, Trophy, Dumbbell, X } from 'lucide-react';
 
-type WorkoutState = 'EXERCISE_ACTIVE' | 'SET_REST' | 'TRANSITION' | 'FINISHED';
+type WorkoutState = 'SETUP' | 'EXERCISE_ACTIVE' | 'SET_REST' | 'TRANSITION' | 'FINISHED';
 
 type Exercise = {
   id: string;
@@ -17,6 +17,7 @@ type Exercise = {
   category: string | null;
   recommended_reps: string | null;
   is_time_based: boolean | null;
+  exercise_type: string | null;
   door_anchor_position: string | null;
   grip_type: string | null;
   selected_bands: string[];
@@ -28,6 +29,18 @@ type Band = { id: string; name: string };
 
 const ANCHOR_LABEL: Record<string, string> = { top: 'Øverst', middle: 'Midden', bottom: 'Bunden' };
 const GRIP_LABEL: Record<string, string>   = { stang: 'Stang', grib: 'Grib', ingen_grib: 'Uden grib', 'ankelbånd': 'Ankelbånd' };
+const CATEGORY_ORDER = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
+
+// Bygger den endelige træningsliste ud fra fravalgte muskelgrupper og tidsbudget.
+// 25 min = kort: compound-øvelser først, fyld op med resten til ~5 øvelser. 45 min = alle.
+function buildWorkout(all: Exercise[], excludedCategories: string[], timeBudget: 25 | 45): Exercise[] {
+  const filtered = all.filter(ex => !ex.category || !excludedCategories.includes(ex.category));
+  if (timeBudget === 45) return filtered;
+  const targetCount = Math.max(3, Math.round(filtered.length * 25 / 45));
+  const compounds = filtered.filter(ex => ex.exercise_type === 'compound');
+  const rest      = filtered.filter(ex => ex.exercise_type !== 'compound');
+  return [...compounds, ...rest].slice(0, targetCount);
+}
 
 function Tag({ label, color }: { label: string; color: string }) {
   return <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold border ${color}`}>{label}</span>;
@@ -40,10 +53,11 @@ export default function WorkoutPage() {
   const idsParam      = searchParams.get('ids');
 
   const [user, setUser]                             = useState<User | null>(null);
+  const [allExercises, setAllExercises]             = useState<Exercise[]>([]);
   const [exercises, setExercises]                   = useState<Exercise[]>([]);
   const [userBands, setUserBands]                   = useState<Band[]>([]);
   const [isLoadingExercises, setIsLoadingExercises] = useState(true);
-  const [currentState, setCurrentState]             = useState<WorkoutState>('EXERCISE_ACTIVE');
+  const [currentState, setCurrentState]             = useState<WorkoutState>('SETUP');
   const [currentExerciseIndex, setCurrentExerciseIndex] = useState(0);
   const [currentSet, setCurrentSet]                 = useState(1);
   const [timer, setTimer]                           = useState(0);
@@ -52,16 +66,31 @@ export default function WorkoutPage() {
   const [isSavingBands, setIsSavingBands]           = useState(false);
   const [bandsSaved, setBandsSaved]                 = useState(false);
 
+  // Opsætning (tid + muskelgrupper)
+  const [timeBudget, setTimeBudget]                 = useState<25 | 45>(45);
+  const [excludedCategories, setExcludedCategories] = useState<string[]>([]);
+  // Valgt varighed for tidsbaserede øvelser (30 / 60 / 120 sek)
+  const [chosenTimeSecs, setChosenTimeSecs]         = useState(45);
+
   const handleTimerFinishRef = useRef<() => void>(() => {});
   const sessionSavedRef      = useRef(false);
 
   const currentExercise = exercises[currentExerciseIndex] ?? null;
   const isLastExercise  = currentExerciseIndex === exercises.length - 1;
   const isLastSet       = currentSet === 3;
-  const timeSecs        = currentExercise?.is_time_based
-    ? parseInt(currentExercise.recommended_reps || '45', 10) || 45
-    : 45;
   const currentLoad = currentExercise?.user_exercise_settings?.[0]?.current_load || null;
+
+  // Muskelgrupper til stede i denne træning (sorteret efter fast rækkefølge)
+  const availableCategories = CATEGORY_ORDER.filter(c => allExercises.some(ex => ex.category === c));
+  const previewCount = buildWorkout(allExercises, excludedCategories, timeBudget).length;
+
+  // Nulstil valgt varighed når vi skifter til en ny øvelse
+  useEffect(() => {
+    if (!currentExercise?.is_time_based) return;
+    const secs = parseInt(currentExercise.recommended_reps || '45', 10) || 45;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setChosenTimeSecs(secs);
+  }, [currentExercise]);
 
   useEffect(() => {
     (async () => {
@@ -69,7 +98,7 @@ export default function WorkoutPage() {
       setUser(user);
       const [exRes, bandRes] = await Promise.all([
         supabase.from('exercises')
-          .select('id, name, category, recommended_reps, is_time_based, door_anchor_position, grip_type, selected_bands, image_url, user_exercise_settings(current_load)')
+          .select('id, name, category, recommended_reps, is_time_based, exercise_type, door_anchor_position, grip_type, selected_bands, image_url, user_exercise_settings(current_load)')
           .order('category'),
         user
           ? supabase.from('user_bands').select('id, name').eq('user_id', user.id).order('created_at', { ascending: true })
@@ -80,9 +109,9 @@ export default function WorkoutPage() {
         if (idsParam) {
           const ids = idsParam.split(',');
           const ordered = ids.map(id => allEx.find(e => e.id === id)).filter(Boolean) as Exercise[];
-          setExercises(ordered);
+          setAllExercises(ordered);
         } else {
-          setExercises(allEx);
+          setAllExercises(allEx);
         }
       }
       if (bandRes.data) setUserBands(bandRes.data as Band[]);
@@ -143,12 +172,12 @@ export default function WorkoutPage() {
         setCurrentState('FINISHED');
       }
     } else if (currentState === 'EXERCISE_ACTIVE' && currentExercise?.is_time_based) {
-      saveSetLog(currentExercise.id, currentSet, timeSecs).then(() => {
+      saveSetLog(currentExercise.id, currentSet, chosenTimeSecs).then(() => {
         if (isLastSet) { setCurrentState('TRANSITION'); setTimer(60); setIsTimerRunning(true); }
         else           { setCurrentState('SET_REST');   setTimer(60); setIsTimerRunning(true); }
       });
     }
-  }, [currentState, isLastExercise, currentExercise, currentSet, isLastSet, timeSecs, saveSetLog]);
+  }, [currentState, isLastExercise, currentExercise, currentSet, isLastSet, chosenTimeSecs, saveSetLog]);
 
   useEffect(() => { handleTimerFinishRef.current = handleTimerFinish; }, [handleTimerFinish]);
 
@@ -169,10 +198,37 @@ export default function WorkoutPage() {
 
   const handleLogSet = async () => {
     if (!currentExercise) return;
-    await saveSetLog(currentExercise.id, currentSet, currentExercise.is_time_based ? timeSecs : 0);
+    await saveSetLog(currentExercise.id, currentSet, currentExercise.is_time_based ? chosenTimeSecs : 0);
     if (isLastSet) { setCurrentState('TRANSITION'); startTimer(60); }
     else           { setCurrentState('SET_REST');   startTimer(60); }
   };
+
+  // Spring hele øvelsen over → gå direkte til næste (eller afslut)
+  const handleSkipExercise = () => {
+    setIsTimerRunning(false);
+    setTimer(0);
+    if (!isLastExercise) {
+      setCurrentExerciseIndex(prev => prev + 1);
+      setCurrentSet(1);
+      setCurrentState('EXERCISE_ACTIVE');
+    } else {
+      setCurrentState('FINISHED');
+    }
+  };
+
+  // Start træningen ud fra opsætningen (tid + muskelgrupper)
+  const handleStartWorkout = () => {
+    const list = buildWorkout(allExercises, excludedCategories, timeBudget);
+    if (list.length === 0) return;
+    setExercises(list);
+    setCurrentExerciseIndex(0);
+    setCurrentSet(1);
+    setCurrentState('EXERCISE_ACTIVE');
+  };
+
+  function toggleCategory(cat: string) {
+    setExcludedCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+  }
 
   function togglePendingBand(name: string) {
     setPendingBands(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name]);
@@ -195,12 +251,79 @@ export default function WorkoutPage() {
     </div>
   );
 
-  if (exercises.length === 0) return (
+  if (allExercises.length === 0) return (
     <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white max-w-md mx-auto text-center">
       <Dumbbell className="w-16 h-16 text-gray-600 mb-4" />
       <h2 className="text-2xl font-bold mb-2">Ingen øvelser endnu</h2>
       <p className="text-gray-400 mb-6">Opret øvelser under Indstillinger for at starte træning.</p>
       <Link href="/settings" className="bg-orange-500 text-white font-bold py-4 px-8 rounded-2xl">GÅ TIL INDSTILLINGER</Link>
+    </div>
+  );
+
+  if (currentState === 'SETUP') return (
+    <div className="min-h-screen bg-transparent flex flex-col text-white max-w-md mx-auto">
+      <header className="flex items-center justify-between p-4 border-b border-white/10 bg-black/40 backdrop-blur-md">
+        <Link href="/" className="p-2 rounded-full hover:bg-white/10 text-gray-400 transition-colors">
+          <ArrowLeft className="w-6 h-6" />
+        </Link>
+        <p className="text-[10px] text-orange-400 uppercase tracking-widest font-bold">
+          {dagLabel ? `${dagLabel} · ` : ''}Tilpas træning
+        </p>
+        <div className="w-10" />
+      </header>
+
+      <main className="flex-1 overflow-y-auto p-6 flex flex-col gap-6 pb-28">
+
+        {/* Tidsbudget */}
+        <div>
+          <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Hvor lang tid har du?</label>
+          <div className="grid grid-cols-2 gap-3">
+            {([[25, '25 min', 'Kort — de vigtigste øvelser'], [45, '45 min', 'Fuld — alle øvelser']] as const).map(([val, title, sub]) => (
+              <button key={val} type="button" onClick={() => setTimeBudget(val)}
+                className={`flex flex-col items-start gap-1 p-4 rounded-2xl border text-left transition-colors ${timeBudget === val ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                <span className="text-lg font-bold">{title}</span>
+                <span className={`text-[11px] ${timeBudget === val ? 'text-white/80' : 'text-gray-500'}`}>{sub}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Muskelgrupper */}
+        {availableCategories.length > 0 && (
+          <div>
+            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Muskelgrupper</label>
+            <p className="text-xs text-gray-500 mb-3">Tryk for at fravælge grupper du vil springe over i dag.</p>
+            <div className="flex flex-wrap gap-2">
+              {availableCategories.map(cat => {
+                const active = !excludedCategories.includes(cat);
+                const count  = allExercises.filter(ex => ex.category === cat).length;
+                return (
+                  <button key={cat} type="button" onClick={() => toggleCategory(cat)}
+                    className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors active:scale-95 ${active ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-500 line-through'}`}>
+                    {cat} <span className={active ? 'text-white/70' : 'text-gray-600'}>({count})</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Forhåndsvisning */}
+        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
+          {previewCount === 0
+            ? <p className="text-red-400 font-bold text-sm">Ingen øvelser tilbage — vælg mindst én muskelgruppe.</p>
+            : <p className="text-gray-300 text-sm"><span className="text-orange-400 font-bold text-lg">{previewCount}</span> øvelser i denne træning</p>}
+        </div>
+      </main>
+
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/60 backdrop-blur-md border-t border-white/10">
+        <div className="max-w-md mx-auto">
+          <button onClick={handleStartWorkout} disabled={previewCount === 0}
+            className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-colors disabled:opacity-40">
+            START TRÆNING
+          </button>
+        </div>
+      </div>
     </div>
   );
 
@@ -282,7 +405,7 @@ export default function WorkoutPage() {
                   <div>
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">Mål</p>
                     <p className="font-bold text-lg">
-                      {currentExercise.is_time_based ? `${timeSecs} sek` : `${currentExercise.recommended_reps || '?'} reps`}
+                      {currentExercise.is_time_based ? `${chosenTimeSecs} sek` : `${currentExercise.recommended_reps || '?'} reps`}
                     </p>
                   </div>
                   {currentLoad && (
@@ -297,13 +420,23 @@ export default function WorkoutPage() {
               <div className="flex flex-col gap-3 mt-auto">
                 {currentExercise.is_time_based ? (
                   <>
+                    {!isTimerRunning && (
+                      <div className="grid grid-cols-3 gap-2">
+                        {([[30, '30 sek'], [60, '1 min'], [120, '2 min']] as const).map(([secs, label]) => (
+                          <button key={secs} type="button" onClick={() => setChosenTimeSecs(secs)}
+                            className={`py-3 rounded-xl text-sm font-bold border transition-colors active:scale-95 ${chosenTimeSecs === secs ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <button
-                      onClick={() => isTimerRunning ? setIsTimerRunning(false) : startTimer(timeSecs)}
+                      onClick={() => isTimerRunning ? setIsTimerRunning(false) : startTimer(chosenTimeSecs)}
                       className={`w-full font-bold py-6 rounded-2xl flex items-center justify-center gap-3 transition-colors active:scale-95 shadow-lg border border-white/10 ${isTimerRunning ? 'bg-red-500/80 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-orange-500/20'}`}>
                       {isTimerRunning ? <Pause className="fill-current w-8 h-8" /> : <Play className="fill-current w-8 h-8" />}
                       <span className="text-xl tracking-wide">{isTimerRunning ? `TID: ${timer}s` : 'START TIMER'}</span>
                     </button>
-                    {!isTimerRunning && timer > 0 && timer < timeSecs && (
+                    {!isTimerRunning && timer > 0 && timer < chosenTimeSecs && (
                       <button onClick={handleLogSet} className="w-full bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 active:scale-95 transition-colors">
                         <Check className="w-5 h-5 text-green-400" /> LOG SÆT ALLIGEVEL
                       </button>
@@ -313,6 +446,11 @@ export default function WorkoutPage() {
                   <button onClick={handleLogSet} className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-6 rounded-2xl flex items-center justify-center gap-3 transition-colors active:scale-95 shadow-lg shadow-orange-500/20">
                     <Check className="w-8 h-8 stroke-[3]" />
                     <span className="text-xl tracking-wide">LOG SÆT {currentSet}</span>
+                  </button>
+                )}
+                {!isTimerRunning && (
+                  <button onClick={handleSkipExercise} className="w-full text-gray-400 hover:text-white font-bold py-3 rounded-2xl flex items-center justify-center gap-2 transition-colors">
+                    <FastForward className="w-5 h-5" /> SPRING ØVELSE OVER
                   </button>
                 )}
               </div>

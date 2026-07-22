@@ -12,6 +12,7 @@ create table public.exercises (
   equipment_type text, -- fx Bar, Handles, Bands, Bodyweight
   recommended_reps text, -- fx "6-15"
   is_time_based boolean default false,
+  exercise_type text, -- 'compound' | 'isolation' | null (bruges til tidsbudget)
   image_url text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
