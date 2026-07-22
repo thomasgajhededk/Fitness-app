@@ -97,6 +97,12 @@ export default function WorkoutPage() {
   // Valgt varighed for tidsbaserede øvelser (30 / 60 / 120 sek)
   const [chosenTimeSecs, setChosenTimeSecs]         = useState(45);
 
+  // Afsluttet træning: gemt session + kalorie-input
+  const [sessionId, setSessionId]                   = useState<string | null>(null);
+  const [calories, setCalories]                     = useState('');
+  const [isSavingCalories, setIsSavingCalories]     = useState(false);
+  const [caloriesSaved, setCaloriesSaved]           = useState(false);
+
   const handleTimerFinishRef = useRef<() => void>(() => {});
   const sessionSavedRef      = useRef(false);
 
@@ -156,15 +162,27 @@ export default function WorkoutPage() {
 
   useEffect(() => { requestWakeLock(); return () => { releaseWakeLock(); }; }, [requestWakeLock, releaseWakeLock]);
 
-  // Gem workout-session i databasen når dag er fuldført
+  // Gem workout-session i databasen når træningen er fuldført (både program-dag og hurtig træning)
   const saveSession = useCallback(async () => {
-    if (!user || !dagLabel) return;
-    await supabase.from('workout_sessions').insert({
+    if (!user) return;
+    const { data } = await supabase.from('workout_sessions').insert({
       user_id: user.id,
-      day_label: dagLabel,
+      day_label: dagLabel || 'Hurtig træning',
       completed_date: new Date().toISOString().split('T')[0],
-    });
-  }, [user, dagLabel]);
+      exercise_count: exercises.length,
+    }).select('id').single();
+    if (data) setSessionId(data.id);
+  }, [user, dagLabel, exercises.length]);
+
+  async function handleSaveCalories() {
+    if (!sessionId) return;
+    const val = parseInt(calories, 10);
+    if (isNaN(val) || val < 0) return;
+    setIsSavingCalories(true);
+    const { error } = await supabase.from('workout_sessions').update({ calories_burned: val }).eq('id', sessionId);
+    setIsSavingCalories(false);
+    if (!error) setCaloriesSaved(true);
+  }
 
   // Kald saveSession én gang når state bliver FINISHED
   useEffect(() => {
@@ -368,6 +386,21 @@ export default function WorkoutPage() {
       <h1 className="text-4xl font-bold tracking-tighter mb-2">FÆRDIG!</h1>
       {dagLabel && <p className="text-orange-400 font-bold mb-2">{dagLabel} fuldført</p>}
       <p className="text-gray-400 mb-8 text-center">Alle sæt er gemt. Godt arbejde.</p>
+
+      {/* Kalorie-input */}
+      <div className="w-full max-w-sm bg-white/5 border border-white/10 rounded-3xl p-5 mb-4">
+        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Forbrændte kalorier (valgfrit)</label>
+        <div className="flex gap-2">
+          <input type="number" inputMode="numeric" value={calories} onChange={e => { setCalories(e.target.value); setCaloriesSaved(false); }}
+            placeholder="Fx. 320"
+            className="flex-1 bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-orange-500 text-white placeholder-gray-500" />
+          <button onClick={handleSaveCalories} disabled={isSavingCalories || !calories || caloriesSaved}
+            className="bg-orange-500 hover:bg-orange-600 text-white px-5 rounded-2xl font-bold text-sm shadow-lg shadow-orange-500/20 transition-colors disabled:opacity-50">
+            {isSavingCalories ? 'VENT' : caloriesSaved ? '✓ GEMT' : 'GEM'}
+          </button>
+        </div>
+      </div>
+
       <Link href="/" className="w-full max-w-sm bg-orange-500 hover:bg-orange-600 text-white text-center font-bold py-4 rounded-2xl active:scale-95 transition-colors shadow-lg shadow-orange-500/20">
         TILBAGE TIL FORSIDE
       </Link>

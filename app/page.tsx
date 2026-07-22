@@ -21,8 +21,9 @@ const CATEGORY_ORDER = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', '
 
 function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
 
-function buildProgram(exercises: Exercise[]): ProgramDay[] {
-  const s = shuffle(exercises);
+function buildProgram(exercises: Exercise[], includeCardio: boolean): ProgramDay[] {
+  const pool = includeCardio ? exercises : exercises.filter(e => e.category !== 'Cardio');
+  const s = shuffle(pool);
   const n = Math.ceil(s.length / 3);
   return [
     { label: 'Dag 1', exercises: s.slice(0, n) },
@@ -67,6 +68,7 @@ export default function HomePage() {
     try { const s = localStorage.getItem('jaafit_program'); return s ? JSON.parse(s) : null; } catch { return null; }
   });
   const [isGenerating, setIsGenerating] = useState(false);
+  const [includeCardio, setIncludeCardio] = useState(false);
   const [hasLoaded, setHasLoaded]       = useState(false);
   const [completedDays, setCompletedDays] = useState<string[]>([]);
 
@@ -112,7 +114,7 @@ export default function HomePage() {
     if (!exercises.length) return;
     setIsGenerating(true);
     setTimeout(() => {
-      const p = buildProgram(exercises);
+      const p = buildProgram(exercises, includeCardio);
       setProgram(p);
       localStorage.setItem('jaafit_program', JSON.stringify(p));
       setIsGenerating(false);
@@ -181,11 +183,21 @@ export default function HomePage() {
                 <Settings className="w-5 h-5" /> OPRET ØVELSER FØRST
               </Link>
             ) : (
+              <>
+              {/* Cardio-tilvalg */}
+              <button type="button" onClick={() => setIncludeCardio(p => !p)}
+                className={`flex items-center justify-between w-full px-4 py-3 mb-4 rounded-2xl border transition-colors ${includeCardio ? 'bg-orange-500/20 border-orange-500/40 text-orange-400' : 'bg-white/5 border-white/10 text-gray-400'}`}>
+                <span className="text-sm font-bold uppercase tracking-wider">Inkludér cardio</span>
+                <div className={`w-12 h-6 rounded-full flex items-center px-1 transition-colors ${includeCardio ? 'bg-orange-500 justify-end' : 'bg-white/10 justify-start'}`}>
+                  <div className="w-4 h-4 rounded-full bg-white shadow" />
+                </div>
+              </button>
               <button onClick={handleGenerate} disabled={isGenerating}
                 className="w-full bg-orange-500 hover:bg-orange-600 disabled:opacity-60 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
                 <RefreshCw className={`w-5 h-5 ${isGenerating ? 'animate-spin' : ''}`} />
                 {isGenerating ? 'GENERERER...' : program ? 'GENERÉR NYT PROGRAM' : 'GENERÉR PROGRAM'}
               </button>
+              </>
             )}
           </div>
         </div>

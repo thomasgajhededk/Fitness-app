@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 
 type WeightLog = { id: string; weight_kg: number; log_date: string };
+type WorkoutSession = { id: string; day_label: string; exercise_count: number | null; calories_burned: number | null; completed_date: string };
 type Exercise  = { id: string; name: string; category: string | null; recommended_reps: string | null; is_time_based: boolean; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null; selected_bands: string[]; image_url: string | null };
 type Band      = { id: string; name: string };
 
@@ -23,6 +24,7 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab]         = useState<'WEIGHT' | 'EXERCISES' | 'UDSTYR'>('WEIGHT');
   const [user, setUser]                   = useState<User | null>(null);
   const [weightLogs, setWeightLogs]       = useState<WeightLog[]>([]);
+  const [sessions, setSessions]           = useState<WorkoutSession[]>([]);
   const [newWeight, setNewWeight]         = useState('');
   const [isLogging, setIsLogging]         = useState(false);
   const [weightError, setWeightError]     = useState<string | null>(null);
@@ -54,13 +56,18 @@ export default function SettingsPage() {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
       setUser(user);
-      if (user) await Promise.all([loadWeightLogs(user.id), loadExercises(), loadBands(user.id)]);
+      if (user) await Promise.all([loadWeightLogs(user.id), loadExercises(), loadBands(user.id), loadSessions(user.id)]);
     })();
   }, []);
 
   async function loadWeightLogs(uid: string) {
     const { data } = await supabase.from('weight_logs').select('id, weight_kg, log_date').eq('user_id', uid).order('log_date', { ascending: true });
     if (data) setWeightLogs(data);
+  }
+
+  async function loadSessions(uid: string) {
+    const { data } = await supabase.from('workout_sessions').select('id, day_label, exercise_count, calories_burned, completed_date').eq('user_id', uid).order('completed_date', { ascending: false });
+    if (data) setSessions(data as WorkoutSession[]);
   }
 
   async function loadExercises() {
@@ -496,6 +503,33 @@ export default function SettingsPage() {
                 <div className="h-full flex items-center justify-center text-gray-500 italic text-sm">Ingen logs endnu.</div>
               )}
             </div>
+
+            {/* Gennemførte træninger */}
+            <div className="mt-6">
+              <h2 className="text-sm font-bold uppercase text-gray-400 mb-3 px-1">Gennemførte træninger</h2>
+              {sessions.length === 0 ? (
+                <p className="text-center text-gray-500 italic text-sm py-6">Ingen træninger endnu.</p>
+              ) : (
+                <div className="space-y-2">
+                  {sessions.map(s => (
+                    <div key={s.id} className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-bold break-words">{s.day_label}</p>
+                        <p className="text-xs text-gray-500 mt-0.5">{new Date(s.completed_date).toLocaleDateString('da-DK', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                      </div>
+                      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                        {s.exercise_count != null && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-gray-300 whitespace-nowrap">{s.exercise_count} øvelser</span>
+                        )}
+                        {s.calories_burned != null && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-orange-500/20 border border-orange-500/30 text-orange-300 whitespace-nowrap">{s.calories_burned} kcal</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -527,8 +561,8 @@ export default function SettingsPage() {
                     )}
                     <div className="p-5 flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
-                        <p className="font-bold text-lg">{ex.name}</p>
-                        <div className="flex items-center gap-2 mt-1">
+                        <p className="font-bold text-lg break-words">{ex.name}</p>
+                        <div className="flex flex-wrap items-center gap-2 mt-1 min-w-0">
                           {ex.category && <p className="text-xs text-orange-400 uppercase font-semibold">{ex.category}</p>}
                           {ex.exercise_type
                             ? <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-gray-300">{ex.exercise_type === 'compound' ? 'Compound' : 'Isolation'}</span>
