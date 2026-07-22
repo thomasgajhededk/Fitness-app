@@ -31,8 +31,8 @@ export function LoginScreen() {
         });
         if (error) throw error;
       }
-    } catch (err: any) {
-      setError(err.message || 'Der opstod en fejl');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Der opstod en fejl');
     } finally {
       setIsLoading(false);
     }
