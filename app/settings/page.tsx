@@ -279,7 +279,7 @@ export default function SettingsPage() {
   const currentImageSrc = imagePreview ?? (removeImage ? null : existingImageUrl);
 
   return (
-    <div className="pb-24 min-h-screen bg-transparent flex flex-col relative text-white max-w-md mx-auto">
+    <div className="pb-24 min-h-screen bg-transparent flex flex-col relative text-white w-full max-w-md mx-auto overflow-x-clip">
 
       {/* ── MODAL ── */}
       {showModal && (
