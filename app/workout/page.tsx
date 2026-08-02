@@ -21,12 +21,16 @@ type Exercise = {
   exercise_type: string | null;
   door_anchor_position: string | null;
   grip_type: string | null;
-  selected_bands: string[];
   image_url: string | null;
-  user_exercise_settings: { current_load: string | null }[];
+  user_exercise_settings: { bands: number[] | null; is_disabled: boolean }[];
 };
 
-type Band = { id: string; name: string };
+type Band = { id: string; weight_kg: number };
+
+// Elastikkerne er pr. bruger. RLS gør at joinet kun rummer den aktuelle brugers række.
+function myBands(ex: Exercise | null): number[] {
+  return ex?.user_exercise_settings?.[0]?.bands ?? [];
+}
 
 const ANCHOR_LABEL: Record<string, string> = { top: 'Øverst', middle: 'Midden', bottom: 'Bunden' };
 const GRIP_LABEL: Record<string, string>   = { stang: 'Stang', grib: 'Grib', ingen_grib: 'Uden grib', 'ankelbånd': 'Ankelbånd' };
@@ -81,7 +85,7 @@ export default function WorkoutPage() {
   const [currentSet, setCurrentSet]                 = useState(1);
   const [timer, setTimer]                           = useState(0);
   const [isTimerRunning, setIsTimerRunning]         = useState(false);
-  const [pendingBands, setPendingBands]             = useState<string[]>([]);
+  const [pendingBands, setPendingBands]             = useState<number[]>([]);
   const [isSavingBands, setIsSavingBands]           = useState(false);
   const [bandsSaved, setBandsSaved]                 = useState(false);
 
@@ -107,7 +111,15 @@ export default function WorkoutPage() {
   const currentExercise = exercises[currentExerciseIndex] ?? null;
   const isLastExercise  = currentExerciseIndex === exercises.length - 1;
   const isLastSet       = currentSet === 3;
-  const currentLoad = currentExercise?.user_exercise_settings?.[0]?.current_load || null;
+  const currentBands = myBands(currentExercise);
+
+  // Hvor mange elastikker af hver vægt brugeren ejer
+  const ownedCounts = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const b of userBands) m.set(b.weight_kg, (m.get(b.weight_kg) ?? 0) + 1);
+    return m;
+  }, [userBands]);
+  const ownedWeights = useMemo(() => [...ownedCounts.keys()].sort((a, b) => a - b), [ownedCounts]);
 
   // Muskelgrupper man kan vælge imellem: både dagens øvelser og puljen der fyldes op fra
   const availableCategories = CATEGORY_ORDER.filter(c =>
@@ -135,14 +147,15 @@ export default function WorkoutPage() {
       setUser(user);
       const [exRes, bandRes] = await Promise.all([
         supabase.from('exercises')
-          .select('id, name, category, recommended_reps, is_time_based, per_side, exercise_type, door_anchor_position, grip_type, selected_bands, image_url, user_exercise_settings(current_load)')
+          .select('id, name, category, recommended_reps, is_time_based, per_side, exercise_type, door_anchor_position, grip_type, image_url, user_exercise_settings(bands, is_disabled)')
           .order('category'),
         user
-          ? supabase.from('user_bands').select('id, name').eq('user_id', user.id).order('created_at', { ascending: true })
+          ? supabase.from('user_bands').select('id, weight_kg').eq('user_id', user.id).order('weight_kg', { ascending: true })
           : Promise.resolve({ data: [] }),
       ]);
       if (!exRes.error && exRes.data) {
-        const allEx = exRes.data as Exercise[];
+        // Fravalgte øvelser skal aldrig med i en træning
+        const allEx = (exRes.data as Exercise[]).filter(e => !e.user_exercise_settings?.[0]?.is_disabled);
         if (idsParam) {
           const ids = idsParam.split(',');
           const ordered = ids.map(id => allEx.find(e => e.id === id)).filter(Boolean) as Exercise[];
@@ -200,7 +213,7 @@ export default function WorkoutPage() {
   useEffect(() => {
     if (currentState === 'TRANSITION' && currentExercise) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPendingBands(currentExercise.selected_bands ?? []);
+      setPendingBands(myBands(currentExercise));
       setBandsSaved(false);
     }
   }, [currentState, currentExercise]);
@@ -304,17 +317,26 @@ export default function WorkoutPage() {
     setExcludedCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
   }
 
-  function togglePendingBand(name: string) {
-    setPendingBands(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name]);
+  function addPendingBand(weight: number) {
+    setPendingBands(prev => [...prev, weight].sort((a, b) => a - b));
+  }
+
+  function removePendingBand(index: number) {
+    setPendingBands(prev => prev.filter((_, i) => i !== index));
   }
 
   async function handleSaveBands() {
-    if (!currentExercise) return;
+    if (!currentExercise || !user) return;
     setIsSavingBands(true);
-    const { error } = await supabase.from('exercises').update({ selected_bands: pendingBands }).eq('id', currentExercise.id);
+    const { error } = await supabase.from('user_exercise_settings').upsert(
+      { user_id: user.id, exercise_id: currentExercise.id, bands: pendingBands },
+      { onConflict: 'user_id,exercise_id' },
+    );
     setIsSavingBands(false);
     if (!error) {
-      setExercises(prev => prev.map(ex => ex.id === currentExercise.id ? { ...ex, selected_bands: pendingBands } : ex));
+      setExercises(prev => prev.map(ex => ex.id === currentExercise.id
+        ? { ...ex, user_exercise_settings: [{ bands: pendingBands, is_disabled: false }] }
+        : ex));
       setBandsSaved(true);
     }
   }
@@ -511,12 +533,12 @@ export default function WorkoutPage() {
               </div>
 
               <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-5 border border-white/10 shadow-lg mb-4">
-                {currentExercise.selected_bands?.length > 0 && (
+                {currentBands.length > 0 && (
                   <div className="mb-4 pb-4 border-b border-white/10">
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-2">Elastikker</p>
                     <div className="flex flex-wrap gap-2">
-                      {currentExercise.selected_bands.map((b, i) => (
-                        <Tag key={i} label={b} color="bg-orange-500/20 border-orange-500/30 text-orange-300" />
+                      {currentBands.map((w, i) => (
+                        <Tag key={i} label={`${w} kg`} color="bg-orange-500/20 border-orange-500/30 text-orange-300" />
                       ))}
                     </div>
                   </div>
@@ -541,10 +563,10 @@ export default function WorkoutPage() {
                       {currentExercise.per_side && <span className="text-gray-400 font-normal text-sm"> pr. side</span>}
                     </p>
                   </div>
-                  {currentLoad && (
+                  {currentBands.length > 0 && (
                     <div className="text-right">
-                      <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">Sidst brugt</p>
-                      <p className="font-bold text-orange-400">{currentLoad}</p>
+                      <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">Modstand</p>
+                      <p className="font-bold text-orange-400">{currentBands.reduce((a, b) => a + b, 0)} kg</p>
                     </div>
                   )}
                 </div>
@@ -661,34 +683,29 @@ export default function WorkoutPage() {
                 <p className="text-gray-500 text-sm italic mt-4">Ingen elastikker — gå til Indstillinger → Udstyr.</p>
               ) : (
                 <div className="mt-4">
-                  {currentExercise.selected_bands?.length > 0 && (
-                    <div className="mb-3">
-                      <p className="text-[11px] text-gray-500 uppercase tracking-wider mb-2">Nuværende</p>
-                      <div className="flex flex-wrap gap-2">
-                        {currentExercise.selected_bands.map((b, i) => (
-                          <span key={i} className="px-3 py-1 rounded-full text-xs font-bold bg-white/10 border border-white/10 text-gray-300">{b}</span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  <p className="text-[11px] text-gray-500 uppercase tracking-wider mb-2">Valgt — i alt {pendingBands.reduce((a, b) => a + b, 0)} kg</p>
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {pendingBands.length === 0 ? (
+                      <span className="text-gray-500 text-sm italic">Ingen elastikker valgt</span>
+                    ) : pendingBands.map((w, i) => (
+                      <button key={i} type="button" onClick={() => removePendingBand(i)}
+                        className="px-3 py-1 rounded-full text-xs font-bold bg-orange-500/20 border border-orange-500/30 text-orange-300 flex items-center gap-1 active:scale-95">
+                        {w} kg <X className="w-3 h-3" />
+                      </button>
+                    ))}
+                  </div>
 
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wider mb-2 mt-4">Vælg nye</p>
+                  <p className="text-[11px] text-gray-500 uppercase tracking-wider mb-2 mt-4">Tilføj elastik</p>
                   <div className="flex flex-wrap gap-2 mb-6">
-                    {userBands.map(b => {
-                      const sel = pendingBands.includes(b.name);
+                    {ownedWeights.map(w => {
+                      const left = (ownedCounts.get(w) ?? 0) - pendingBands.filter(p => p === w).length;
                       return (
-                        <button key={b.id} type="button" onClick={() => togglePendingBand(b.name)}
-                          className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors active:scale-95 ${sel ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
-                          {b.name}
+                        <button key={w} type="button" onClick={() => addPendingBand(w)} disabled={left <= 0}
+                          className="px-4 py-2 rounded-full text-sm font-bold border border-white/10 bg-white/5 text-gray-300 hover:bg-white/10 transition-colors active:scale-95 disabled:opacity-30">
+                          {w} kg <span className="text-gray-500 font-normal">({left})</span>
                         </button>
                       );
                     })}
-                    {pendingBands.length > 0 && (
-                      <button type="button" onClick={() => setPendingBands([])}
-                        className="px-3 py-2 rounded-full text-xs font-bold border border-white/10 bg-white/5 text-gray-500 hover:text-red-400 transition-colors flex items-center gap-1">
-                        <X className="w-3 h-3" /> Ryd
-                      </button>
-                    )}
                   </div>
 
                   <div className="flex gap-3">

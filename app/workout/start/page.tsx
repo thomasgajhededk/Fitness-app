@@ -20,22 +20,19 @@ export default function WorkoutStartPage() {
 
   useEffect(() => {
     (async () => {
-      let program: ProgramDay[] | null = null;
-      try {
-        const saved = localStorage.getItem('jaafit_program');
-        if (saved) program = JSON.parse(saved);
-      } catch { /* ignore */ }
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setNoProgram(true); return; }
 
+      const [progRes, sessRes] = await Promise.all([
+        supabase.from('user_programs').select('program').eq('user_id', user.id).maybeSingle(),
+        supabase.from('workout_sessions').select('day_label')
+          .eq('user_id', user.id).gte('completed_date', getMondayISO()),
+      ]);
+
+      const program = progRes.data?.program as ProgramDay[] | undefined;
       if (!program || program.length === 0) { setNoProgram(true); return; }
 
-      const { data: { user } } = await supabase.auth.getUser();
-      let completedDays: string[] = [];
-      if (user) {
-        const { data } = await supabase
-          .from('workout_sessions').select('day_label')
-          .eq('user_id', user.id).gte('completed_date', getMondayISO());
-        if (data) completedDays = data.map(r => r.day_label);
-      }
+      const completedDays = (sessRes.data ?? []).map(r => r.day_label);
 
       const nextDay = program.find(d => !completedDays.includes(d.label));
       if (!nextDay) { setAllDone(true); return; }

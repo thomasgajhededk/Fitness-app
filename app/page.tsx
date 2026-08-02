@@ -6,8 +6,8 @@ import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap,
 import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 
-type Exercise   = { id: string; name: string; category: string | null; exercise_type: string | null; selected_bands: string[]; door_anchor_position: string | null; grip_type: string | null };
-type Band       = { id: string; name: string };
+type Exercise   = { id: string; name: string; category: string | null; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null };
+type Band       = { id: string; weight_kg: number };
 type ProgramDay = { label: string; exercises: Exercise[] };
 
 const GRIP_OPTS = [
@@ -39,17 +39,25 @@ function getMondayISO(): string {
   return d.toISOString().split('T')[0];
 }
 
+function countByWeight(weights: number[]): Map<number, number> {
+  const m = new Map<number, number>();
+  for (const w of weights) m.set(w, (m.get(w) ?? 0) + 1);
+  return m;
+}
+
 function filterByEquipment(
   exercises: Exercise[],
-  availBands: string[],
+  exBands: Record<string, number[]>,
+  availWeights: number[],
+  ownedCounts: Map<number, number>,
   hasDoorAnchor: boolean,
   availGrips: string[]
 ): Exercise[] {
   return exercises.filter(ex => {
-    // Elastikker: alle øvelsens bands skal være tilgængelige (eller øvelsen har ingen)
-    if (ex.selected_bands?.length > 0) {
-      const hasAllBands = ex.selected_bands.every(b => availBands.includes(b));
-      if (!hasAllBands) return false;
+    // Elastikker: brugeren skal have nok af hver vægt øvelsen kræver
+    for (const [w, needed] of countByWeight(exBands[ex.id] ?? [])) {
+      if (!availWeights.includes(w)) return false;
+      if ((ownedCounts.get(w) ?? 0) < needed) return false;
     }
     // Døranker: øvelse kræver det, men brugeren har det ikke
     if (ex.door_anchor_position && !hasDoorAnchor) return false;
@@ -63,10 +71,8 @@ export default function HomePage() {
   const [user, setUser]                 = useState<User | null>(null);
   const [exercises, setExercises]       = useState<Exercise[]>([]);
   const [userBands, setUserBands]       = useState<Band[]>([]);
-  const [program, setProgram]           = useState<ProgramDay[] | null>(() => {
-    if (typeof window === 'undefined') return null;
-    try { const s = localStorage.getItem('jaafit_program'); return s ? JSON.parse(s) : null; } catch { return null; }
-  });
+  const [exBands, setExBands]           = useState<Record<string, number[]>>({});
+  const [program, setProgram]           = useState<ProgramDay[] | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [includeCardio, setIncludeCardio] = useState(false);
   const [hasLoaded, setHasLoaded]       = useState(false);
@@ -74,7 +80,7 @@ export default function HomePage() {
 
   // Hurtig træning
   const [showQuick, setShowQuick]       = useState(false);
-  const [availBands, setAvailBands]     = useState<string[]>([]);
+  const [availWeights, setAvailWeights] = useState<number[]>([]);
   const [hasDoorAnchor, setHasDoorAnchor] = useState(false);
   const [availGrips, setAvailGrips]     = useState<string[]>([]);
   const [quickBudget, setQuickBudget]   = useState<25 | 45>(45);
@@ -92,13 +98,38 @@ export default function HomePage() {
       const { data: { user } } = await supabase.auth.getUser();
       setUser(user);
       if (user) {
-        const [exRes, bandRes] = await Promise.all([
-          supabase.from('exercises').select('id, name, category, exercise_type, selected_bands, door_anchor_position, grip_type').order('name'),
-          supabase.from('user_bands').select('id, name').eq('user_id', user.id).order('created_at', { ascending: true }),
+        const [exRes, bandRes, setRes, progRes] = await Promise.all([
+          supabase.from('exercises').select('id, name, category, exercise_type, door_anchor_position, grip_type').order('name'),
+          supabase.from('user_bands').select('id, weight_kg').eq('user_id', user.id).order('weight_kg', { ascending: true }),
+          supabase.from('user_exercise_settings').select('exercise_id, bands, is_disabled').eq('user_id', user.id),
+          supabase.from('user_programs').select('program').eq('user_id', user.id).maybeSingle(),
           loadCompletedDays(user.id),
         ]);
-        if (exRes.data) setExercises(exRes.data as Exercise[]);
-        if (bandRes.data) setUserBands(bandRes.data as Band[]);
+
+        const disabled = new Set((setRes.data ?? []).filter(r => r.is_disabled).map(r => r.exercise_id));
+        setExBands(Object.fromEntries((setRes.data ?? []).map(r => [r.exercise_id, r.bands ?? []])));
+        if (exRes.data) setExercises((exRes.data as Exercise[]).filter(ex => !disabled.has(ex.id)));
+
+        if (bandRes.data) {
+          const bs = bandRes.data as Band[];
+          setUserBands(bs);
+          setAvailWeights([...new Set(bs.map(b => b.weight_kg))]);
+        }
+
+        if (progRes.data?.program) {
+          setProgram(progRes.data.program as ProgramDay[]);
+        } else {
+          // Engangsflytning af det program der lå i browseren
+          try {
+            const s = localStorage.getItem('jaafit_program');
+            if (s) {
+              const p = JSON.parse(s) as ProgramDay[];
+              setProgram(p);
+              await supabase.from('user_programs').upsert({ user_id: user.id, program: p, updated_at: new Date().toISOString() });
+              localStorage.removeItem('jaafit_program');
+            }
+          } catch { /* ignore */ }
+        }
       }
       setHasLoaded(true);
     })();
@@ -111,18 +142,18 @@ export default function HomePage() {
   }, [user, loadCompletedDays]);
 
   function handleGenerate() {
-    if (!exercises.length) return;
+    if (!exercises.length || !user) return;
     setIsGenerating(true);
-    setTimeout(() => {
+    setTimeout(async () => {
       const p = buildProgram(exercises, includeCardio);
       setProgram(p);
-      localStorage.setItem('jaafit_program', JSON.stringify(p));
+      await supabase.from('user_programs').upsert({ user_id: user.id, program: p, updated_at: new Date().toISOString() });
       setIsGenerating(false);
     }, 600);
   }
 
   function generateQuick() {
-    const filtered = filterByEquipment(exercises, availBands, hasDoorAnchor, availGrips)
+    const filtered = filterByEquipment(exercises, exBands, availWeights, ownedCounts, hasDoorAnchor, availGrips)
       .filter(ex => !ex.category || !excludedQuickCats.includes(ex.category));
     const target   = quickBudget === 45 ? 9 : 5;
     const s        = shuffle(filtered);
@@ -134,8 +165,8 @@ export default function HomePage() {
     setQuickPool(filtered);
   }
 
-  function toggleBand(name: string) {
-    setAvailBands(prev => prev.includes(name) ? prev.filter(b => b !== name) : [...prev, name]);
+  function toggleWeight(w: number) {
+    setAvailWeights(prev => prev.includes(w) ? prev.filter(x => x !== w) : [...prev, w]);
     setQuickExercises(null);
   }
   function toggleGrip(val: string) {
@@ -147,7 +178,9 @@ export default function HomePage() {
     setQuickExercises(null);
   }
 
-  const quickCats = CATEGORY_ORDER.filter(c => exercises.some(e => e.category === c));
+  const quickCats     = CATEGORY_ORDER.filter(c => exercises.some(e => e.category === c));
+  const ownedCounts   = countByWeight(userBands.map(b => b.weight_kg));
+  const bandWeights   = [...ownedCounts.keys()].sort((a, b) => a - b);
 
   const initials     = user?.email ? user.email.slice(0, 2).toUpperCase() : '??';
   const allDays      = program ?? [];
@@ -249,16 +282,17 @@ export default function HomePage() {
               </div>
 
               {/* Elastikker */}
-              {userBands.length > 0 && (
+              {bandWeights.length > 0 && (
                 <div>
                   <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Elastikker</label>
                   <div className="flex flex-wrap gap-2">
-                    {userBands.map(b => {
-                      const sel = availBands.includes(b.name);
+                    {bandWeights.map(w => {
+                      const sel   = availWeights.includes(w);
+                      const count = ownedCounts.get(w) ?? 0;
                       return (
-                        <button key={b.id} type="button" onClick={() => toggleBand(b.name)}
+                        <button key={w} type="button" onClick={() => toggleWeight(w)}
                           className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors ${sel ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
-                          {b.name}
+                          {w} kg{count > 1 && <span className={sel ? 'text-white/70' : 'text-gray-500'}> ×{count}</span>}
                         </button>
                       );
                     })}
