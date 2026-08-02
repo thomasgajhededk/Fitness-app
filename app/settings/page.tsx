@@ -10,13 +10,13 @@ import type { User } from '@supabase/supabase-js';
 
 type WeightLog = { id: string; weight_kg: number; log_date: string };
 type WorkoutSession = { id: string; day_label: string; exercise_count: number | null; calories_burned: number | null; completed_date: string };
-type Exercise  = { id: string; name: string; category: string | null; recommended_reps: string | null; is_time_based: boolean; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null; selected_bands: string[]; image_url: string | null };
+type Exercise  = { id: string; name: string; category: string | null; recommended_reps: string | null; is_time_based: boolean; per_side: boolean; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null; selected_bands: string[]; image_url: string | null };
 type Band      = { id: string; name: string };
 
 const CATEGORIES  = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
 const ANCHOR_OPTS = [{ value: 'top', label: 'Øverst' }, { value: 'middle', label: 'Midden' }, { value: 'bottom', label: 'Bunden' }];
 const GRIP_OPTS   = [{ value: 'stang', label: 'Stang' }, { value: 'grib', label: 'Grib' }, { value: 'ingen_grib', label: 'Uden grib' }, { value: 'ankelbånd', label: 'Ankelbånd' }];
-const EMPTY_FORM  = { name: '', category: '', recommended_reps: '', is_time_based: false, exercise_type: '' as '' | 'compound' | 'isolation', use_door_anchor: false, door_anchor_position: 'top', use_grip: false, grip_type: 'grib', selected_bands: [] as string[] };
+const EMPTY_FORM  = { name: '', category: '', recommended_reps: '', is_time_based: false, per_side: false, exercise_type: '' as '' | 'compound' | 'isolation', use_door_anchor: false, door_anchor_position: 'top', use_grip: false, grip_type: 'grib', selected_bands: [] as string[] };
 
 type ModalMode = 'create' | 'edit';
 
@@ -72,7 +72,7 @@ export default function SettingsPage() {
 
   async function loadExercises() {
     setIsLoadingEx(true);
-    const { data } = await supabase.from('exercises').select('id, name, category, recommended_reps, is_time_based, exercise_type, door_anchor_position, grip_type, selected_bands, image_url').order('name');
+    const { data } = await supabase.from('exercises').select('id, name, category, recommended_reps, is_time_based, per_side, exercise_type, door_anchor_position, grip_type, selected_bands, image_url').order('name');
     if (data) setExercises(data as Exercise[]);
     setIsLoadingEx(false);
   }
@@ -99,6 +99,7 @@ export default function SettingsPage() {
       category: ex.category ?? '',
       recommended_reps: ex.recommended_reps ?? '',
       is_time_based: ex.is_time_based,
+      per_side: ex.per_side ?? false,
       exercise_type: (ex.exercise_type ?? '') as '' | 'compound' | 'isolation',
       use_door_anchor: !!ex.door_anchor_position,
       door_anchor_position: ex.door_anchor_position ?? 'top',
@@ -201,6 +202,7 @@ export default function SettingsPage() {
       category:             form.category || null,
       recommended_reps:     form.recommended_reps || null,
       is_time_based:        form.is_time_based,
+      per_side:             form.per_side,
       exercise_type:        form.exercise_type || null,
       door_anchor_position: form.use_door_anchor ? form.door_anchor_position : null,
       grip_type:            form.use_grip        ? form.grip_type            : null,
@@ -210,14 +212,14 @@ export default function SettingsPage() {
 
     if (modalMode === 'create') {
       const { data, error } = await supabase.from('exercises').insert({ ...payload, user_id: user.id })
-        .select('id, name, category, recommended_reps, is_time_based, exercise_type, door_anchor_position, grip_type, selected_bands, image_url').single();
+        .select('id, name, category, recommended_reps, is_time_based, per_side, exercise_type, door_anchor_position, grip_type, selected_bands, image_url').single();
       setIsSaving(false);
       if (error) { setModalError('Fejl: ' + error.message); return; }
       if (data) setExercises(prev => [...prev, data as Exercise].sort((a, b) => a.name.localeCompare(b.name, 'da')));
     } else {
       if (!editingId) return;
       const { data, error } = await supabase.from('exercises').update(payload).eq('id', editingId)
-        .select('id, name, category, recommended_reps, is_time_based, exercise_type, door_anchor_position, grip_type, selected_bands, image_url').single();
+        .select('id, name, category, recommended_reps, is_time_based, per_side, exercise_type, door_anchor_position, grip_type, selected_bands, image_url').single();
       setIsSaving(false);
       if (error) { setModalError('Fejl: ' + error.message); return; }
       if (data) setExercises(prev => prev.map(ex => ex.id === editingId ? data as Exercise : ex));
@@ -357,6 +359,18 @@ export default function SettingsPage() {
                 className={`flex items-center justify-between px-4 py-3 rounded-2xl border transition-colors ${form.is_time_based ? 'bg-orange-500/20 border-orange-500/40 text-orange-400' : 'bg-white/5 border-white/10 text-gray-400'}`}>
                 <span className="text-sm font-bold uppercase tracking-wider">Tidsbaseret øvelse</span>
                 <div className={`w-12 h-6 rounded-full flex items-center px-1 transition-colors ${form.is_time_based ? 'bg-orange-500 justify-end' : 'bg-white/10 justify-start'}`}>
+                  <div className="w-4 h-4 rounded-full bg-white shadow" />
+                </div>
+              </button>
+
+              {/* Pr. side: to gennemløb pr. sæt — højre og venstre */}
+              <button type="button" onClick={() => setForm({ ...form, per_side: !form.per_side })}
+                className={`flex items-center justify-between px-4 py-3 rounded-2xl border transition-colors ${form.per_side ? 'bg-orange-500/20 border-orange-500/40 text-orange-400' : 'bg-white/5 border-white/10 text-gray-400'}`}>
+                <span className="text-left">
+                  <span className="text-sm font-bold uppercase tracking-wider block">Trænes pr. side</span>
+                  <span className="text-[11px] text-gray-500">Højre og venstre hver for sig i hvert sæt</span>
+                </span>
+                <div className={`w-12 h-6 rounded-full flex items-center px-1 transition-colors flex-shrink-0 ${form.per_side ? 'bg-orange-500 justify-end' : 'bg-white/10 justify-start'}`}>
                   <div className="w-4 h-4 rounded-full bg-white shadow" />
                 </div>
               </button>

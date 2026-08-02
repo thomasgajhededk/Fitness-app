@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useWakeLock } from '@/hooks/use-wake-lock';
@@ -17,6 +17,7 @@ type Exercise = {
   category: string | null;
   recommended_reps: string | null;
   is_time_based: boolean | null;
+  per_side: boolean | null;
   exercise_type: string | null;
   door_anchor_position: string | null;
   grip_type: string | null;
@@ -35,7 +36,7 @@ function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 
 
 // Bygger den endelige træningsliste ud fra fravalgte muskelgrupper og tidsbudget.
 // 25 min = kort (~55% af øvelserne, compound først). 45 min = fuldt antal (fullCount).
-// Hvis fravalg gør listen for kort, fyldes op fra `pool` med øvelser i de tilvalgte muskelgrupper.
+// Fravalgte øvelser erstattes med nye fra `pool`, så antallet af øvelser holdes.
 function buildWorkout(
   day: Exercise[],
   pool: Exercise[],
@@ -48,20 +49,13 @@ function buildWorkout(
   const compoundFirst = (arr: Exercise[]) =>
     timeBudget === 25 ? [...arr.filter(e => e.exercise_type === 'compound'), ...arr.filter(e => e.exercise_type !== 'compound')] : arr;
 
-  // Muskelgrupper der stadig er valgt (findes i dagens øvelser og ikke fravalgt)
-  const dayCats = Array.from(new Set(day.map(e => e.category).filter(Boolean))) as string[];
-  const selectedCats = dayCats.filter(c => !excludedCategories.includes(c));
+  const list = compoundFirst(day.filter(allowed)).slice(0, targetCount);
+  if (list.length >= targetCount) return list;
 
-  let list = compoundFirst(day.filter(allowed)).slice(0, targetCount);
-
-  // Fyld op til targetCount fra puljen med øvelser i de tilvalgte muskelgrupper
-  if (list.length < targetCount) {
-    const have = new Set(list.map(e => e.id));
-    let candidates = pool.filter(ex => !have.has(ex.id) && ex.category && selectedCats.includes(ex.category));
-    candidates = compoundFirst(shuffle(candidates));
-    list = [...list, ...candidates].slice(0, targetCount);
-  }
-  return list;
+  // Erstat de fravalgte øvelser med nye fra puljen i en hvilken som helst tilvalgt muskelgruppe
+  const have = new Set(list.map(e => e.id));
+  const candidates = compoundFirst(shuffle(pool.filter(ex => !have.has(ex.id) && allowed(ex))));
+  return [...list, ...candidates].slice(0, targetCount);
 }
 
 function Tag({ label, color }: { label: string; color: string }) {
@@ -96,6 +90,10 @@ export default function WorkoutPage() {
   const [excludedCategories, setExcludedCategories] = useState<string[]>([]);
   // Valgt varighed for tidsbaserede øvelser (30 / 60 / 120 sek)
   const [chosenTimeSecs, setChosenTimeSecs]         = useState(45);
+  // Pause mellem sæt og øvelser (30 / 60 / 90 sek)
+  const [restSeconds, setRestSeconds]               = useState(60);
+  // Øvelser der trænes pr. side køres som to timere: højre først, så venstre
+  const [currentSide, setCurrentSide]               = useState<'right' | 'left'>('right');
 
   // Afsluttet træning: gemt session + kalorie-input
   const [sessionId, setSessionId]                   = useState<string | null>(null);
@@ -111,11 +109,17 @@ export default function WorkoutPage() {
   const isLastSet       = currentSet === 3;
   const currentLoad = currentExercise?.user_exercise_settings?.[0]?.current_load || null;
 
-  // Muskelgrupper til stede i denne træning (sorteret efter fast rækkefølge)
-  const availableCategories = CATEGORY_ORDER.filter(c => allExercises.some(ex => ex.category === c));
+  // Muskelgrupper man kan vælge imellem: både dagens øvelser og puljen der fyldes op fra
+  const availableCategories = CATEGORY_ORDER.filter(c =>
+    allExercises.some(ex => ex.category === c) || poolExercises.some(ex => ex.category === c));
   // Fuldt antal øvelser: hurtig træning sigter mod 9, program-dag mod dagens antal.
   const fullCount = poolParam ? Math.min(9, poolExercises.length) : allExercises.length;
-  const previewCount = buildWorkout(allExercises, poolExercises, excludedCategories, timeBudget, fullCount).length;
+  // Memoiseret, så listen ikke blandes om på hver render (buildWorkout shuffler)
+  const previewExercises = useMemo(
+    () => buildWorkout(allExercises, poolExercises, excludedCategories, timeBudget, fullCount),
+    [allExercises, poolExercises, excludedCategories, timeBudget, fullCount],
+  );
+  const previewCount = previewExercises.length;
 
   // Nulstil valgt varighed når vi skifter til en ny øvelse
   useEffect(() => {
@@ -131,7 +135,7 @@ export default function WorkoutPage() {
       setUser(user);
       const [exRes, bandRes] = await Promise.all([
         supabase.from('exercises')
-          .select('id, name, category, recommended_reps, is_time_based, exercise_type, door_anchor_position, grip_type, selected_bands, image_url, user_exercise_settings(current_load)')
+          .select('id, name, category, recommended_reps, is_time_based, per_side, exercise_type, door_anchor_position, grip_type, selected_bands, image_url, user_exercise_settings(current_load)')
           .order('category'),
         user
           ? supabase.from('user_bands').select('id, name').eq('user_id', user.id).order('created_at', { ascending: true })
@@ -212,6 +216,16 @@ export default function WorkoutPage() {
     });
   }, [user]);
 
+  // Afslut det aktuelle sæt: gem log og start pausen (eller skift øvelse)
+  const finishSet = useCallback(async (durationSecs: number) => {
+    if (!currentExercise) return;
+    await saveSetLog(currentExercise.id, currentSet, durationSecs);
+    setCurrentSide('right');
+    setCurrentState(isLastSet ? 'TRANSITION' : 'SET_REST');
+    setTimer(restSeconds);
+    setIsTimerRunning(true);
+  }, [currentExercise, currentSet, isLastSet, restSeconds, saveSetLog]);
+
   const handleTimerFinish = useCallback(() => {
     if (currentState === 'SET_REST') {
       setCurrentState('EXERCISE_ACTIVE');
@@ -220,17 +234,17 @@ export default function WorkoutPage() {
       if (!isLastExercise) {
         setCurrentExerciseIndex(prev => prev + 1);
         setCurrentSet(1);
+        setCurrentSide('right');
         setCurrentState('EXERCISE_ACTIVE');
       } else {
         setCurrentState('FINISHED');
       }
     } else if (currentState === 'EXERCISE_ACTIVE' && currentExercise?.is_time_based) {
-      saveSetLog(currentExercise.id, currentSet, chosenTimeSecs).then(() => {
-        if (isLastSet) { setCurrentState('TRANSITION'); setTimer(60); setIsTimerRunning(true); }
-        else           { setCurrentState('SET_REST');   setTimer(60); setIsTimerRunning(true); }
-      });
+      // Højre side færdig → vent på at brugeren starter venstre side
+      if (currentExercise.per_side && currentSide === 'right') { setCurrentSide('left'); return; }
+      finishSet(currentExercise.per_side ? chosenTimeSecs * 2 : chosenTimeSecs);
     }
-  }, [currentState, isLastExercise, currentExercise, currentSet, isLastSet, chosenTimeSecs, saveSetLog]);
+  }, [currentState, isLastExercise, currentExercise, currentSide, chosenTimeSecs, finishSet]);
 
   useEffect(() => { handleTimerFinishRef.current = handleTimerFinish; }, [handleTimerFinish]);
 
@@ -251,15 +265,22 @@ export default function WorkoutPage() {
 
   const handleLogSet = async () => {
     if (!currentExercise) return;
-    await saveSetLog(currentExercise.id, currentSet, currentExercise.is_time_based ? chosenTimeSecs : 0);
-    if (isLastSet) { setCurrentState('TRANSITION'); startTimer(60); }
-    else           { setCurrentState('SET_REST');   startTimer(60); }
+    // Højre side logget → gå videre til venstre side, sættet er først slut bagefter
+    if (currentExercise.per_side && currentSide === 'right') {
+      setIsTimerRunning(false);
+      setTimer(0);
+      setCurrentSide('left');
+      return;
+    }
+    const secsPerSide = currentExercise.is_time_based ? chosenTimeSecs : 0;
+    await finishSet(currentExercise.per_side ? secsPerSide * 2 : secsPerSide);
   };
 
   // Spring hele øvelsen over → gå direkte til næste (eller afslut)
   const handleSkipExercise = () => {
     setIsTimerRunning(false);
     setTimer(0);
+    setCurrentSide('right');
     if (!isLastExercise) {
       setCurrentExerciseIndex(prev => prev + 1);
       setCurrentSet(1);
@@ -269,13 +290,13 @@ export default function WorkoutPage() {
     }
   };
 
-  // Start træningen ud fra opsætningen (tid + muskelgrupper)
+  // Start træningen med præcis den liste der blev vist i opsætningen
   const handleStartWorkout = () => {
-    const list = buildWorkout(allExercises, poolExercises, excludedCategories, timeBudget, fullCount);
-    if (list.length === 0) return;
-    setExercises(list);
+    if (previewExercises.length === 0) return;
+    setExercises(previewExercises);
     setCurrentExerciseIndex(0);
     setCurrentSet(1);
+    setCurrentSide('right');
     setCurrentState('EXERCISE_ACTIVE');
   };
 
@@ -341,15 +362,28 @@ export default function WorkoutPage() {
           </div>
         </div>
 
+        {/* Pause mellem øvelser */}
+        <div>
+          <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Pause mellem sæt og øvelser</label>
+          <div className="grid grid-cols-3 gap-2">
+            {([30, 60, 90] as const).map(secs => (
+              <button key={secs} type="button" onClick={() => setRestSeconds(secs)}
+                className={`py-3 rounded-xl text-sm font-bold border transition-colors active:scale-95 ${restSeconds === secs ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                {secs} sek
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Muskelgrupper */}
         {availableCategories.length > 0 && (
           <div>
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Muskelgrupper</label>
-            <p className="text-xs text-gray-500 mb-3">Tryk for at fravælge grupper du vil springe over i dag.</p>
+            <p className="text-xs text-gray-500 mb-3">Tryk for at fravælge grupper — vi finder nye øvelser i stedet, så antallet holdes.</p>
             <div className="flex flex-wrap gap-2">
               {availableCategories.map(cat => {
                 const active = !excludedCategories.includes(cat);
-                const count  = allExercises.filter(ex => ex.category === cat).length;
+                const count  = previewExercises.filter(ex => ex.category === cat).length;
                 return (
                   <button key={cat} type="button" onClick={() => toggleCategory(cat)}
                     className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors active:scale-95 ${active ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-500 line-through'}`}>
@@ -361,12 +395,32 @@ export default function WorkoutPage() {
           </div>
         )}
 
-        {/* Forhåndsvisning */}
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
-          {previewCount === 0
-            ? <p className="text-red-400 font-bold text-sm">Ingen øvelser tilbage — vælg mindst én muskelgruppe.</p>
-            : <p className="text-gray-300 text-sm"><span className="text-orange-400 font-bold text-lg">{previewCount}</span> øvelser i denne træning</p>}
-        </div>
+        {/* Forhåndsvisning: hele listen af øvelser */}
+        {previewCount === 0 ? (
+          <div className="bg-white/5 border border-white/10 rounded-2xl p-4 text-center">
+            <p className="text-red-400 font-bold text-sm">Ingen øvelser tilbage — vælg mindst én muskelgruppe.</p>
+          </div>
+        ) : (
+          <div>
+            <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">
+              Dagens øvelser <span className="text-orange-400">({previewCount})</span>
+            </label>
+            <div className="space-y-2">
+              {previewExercises.map((ex, i) => (
+                <div key={ex.id} className="flex items-center gap-3 bg-white/5 rounded-2xl px-4 py-3 border border-white/10">
+                  <span className="text-orange-500 font-bold text-sm w-5 flex-shrink-0">{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-sm truncate">{ex.name}</p>
+                    {ex.category && <p className="text-[11px] text-gray-500 uppercase tracking-wider">{ex.category}</p>}
+                  </div>
+                  <span className="text-[11px] text-gray-500 flex-shrink-0">
+                    {ex.is_time_based ? 'Tid' : `${ex.recommended_reps || '?'} reps`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </main>
 
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/60 backdrop-blur-md border-t border-white/10">
@@ -444,6 +498,16 @@ export default function WorkoutPage() {
                   </span>
                 )}
                 <h2 className="text-4xl font-bold leading-tight tracking-tighter">{currentExercise.name}</h2>
+                {currentExercise.per_side && (
+                  <div className="flex items-center justify-center gap-2 mt-3">
+                    {(['right', 'left'] as const).map(side => (
+                      <span key={side}
+                        className={`px-3 py-1 rounded-full text-xs font-bold border ${currentSide === side ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-500'}`}>
+                        {side === 'right' ? 'Højre side' : 'Venstre side'}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="bg-white/5 backdrop-blur-xl rounded-3xl p-5 border border-white/10 shadow-lg mb-4">
@@ -474,6 +538,7 @@ export default function WorkoutPage() {
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">Mål</p>
                     <p className="font-bold text-lg">
                       {currentExercise.is_time_based ? `${chosenTimeSecs} sek` : `${currentExercise.recommended_reps || '?'} reps`}
+                      {currentExercise.per_side && <span className="text-gray-400 font-normal text-sm"> pr. side</span>}
                     </p>
                   </div>
                   {currentLoad && (
@@ -488,7 +553,8 @@ export default function WorkoutPage() {
               <div className="flex flex-col gap-3 mt-auto">
                 {currentExercise.is_time_based ? (
                   <>
-                    {!isTimerRunning && (
+                    {/* Varigheden vælges kun før første side, så begge sider er lige lange */}
+                    {!isTimerRunning && currentSide === 'right' && (
                       <div className="grid grid-cols-3 gap-2">
                         {([[30, '30 sek'], [60, '1 min'], [120, '2 min']] as const).map(([secs, label]) => (
                           <button key={secs} type="button" onClick={() => setChosenTimeSecs(secs)}
@@ -502,7 +568,13 @@ export default function WorkoutPage() {
                       onClick={() => isTimerRunning ? setIsTimerRunning(false) : startTimer(chosenTimeSecs)}
                       className={`w-full font-bold py-6 rounded-2xl flex items-center justify-center gap-3 transition-colors active:scale-95 shadow-lg border border-white/10 ${isTimerRunning ? 'bg-red-500/80 text-white' : 'bg-orange-500 hover:bg-orange-600 text-white shadow-orange-500/20'}`}>
                       {isTimerRunning ? <Pause className="fill-current w-8 h-8" /> : <Play className="fill-current w-8 h-8" />}
-                      <span className="text-xl tracking-wide">{isTimerRunning ? `TID: ${timer}s` : 'START TIMER'}</span>
+                      <span className="text-xl tracking-wide">
+                        {isTimerRunning
+                          ? `TID: ${timer}s`
+                          : currentExercise.per_side
+                            ? `START ${currentSide === 'right' ? 'HØJRE' : 'VENSTRE'} SIDE`
+                            : 'START TIMER'}
+                      </span>
                     </button>
                     {!isTimerRunning && timer > 0 && timer < chosenTimeSecs && (
                       <button onClick={handleLogSet} className="w-full bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 active:scale-95 transition-colors">
@@ -513,7 +585,11 @@ export default function WorkoutPage() {
                 ) : (
                   <button onClick={handleLogSet} className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-6 rounded-2xl flex items-center justify-center gap-3 transition-colors active:scale-95 shadow-lg shadow-orange-500/20">
                     <Check className="w-8 h-8 stroke-[3]" />
-                    <span className="text-xl tracking-wide">LOG SÆT {currentSet}</span>
+                    <span className="text-xl tracking-wide">
+                      {currentExercise.per_side
+                        ? `LOG ${currentSide === 'right' ? 'HØJRE' : 'VENSTRE'} SIDE`
+                        : `LOG SÆT ${currentSet}`}
+                    </span>
                   </button>
                 )}
                 {!isTimerRunning && (
@@ -536,7 +612,7 @@ export default function WorkoutPage() {
               <svg className="absolute w-[280px] h-[280px] transform -rotate-90">
                 <circle cx="140" cy="140" r="130" stroke="currentColor" strokeWidth="4" fill="transparent" className="text-white/5" />
                 <circle cx="140" cy="140" r="130" stroke="currentColor" strokeWidth="4" fill="transparent"
-                  strokeDasharray="816" strokeDashoffset={`${816 - (timer / 60) * 816}`}
+                  strokeDasharray="816" strokeDashoffset={`${816 - (timer / restSeconds) * 816}`}
                   className="text-orange-500 transition-all duration-1000 ease-linear" />
               </svg>
               <span className="z-10">{timer}</span>
