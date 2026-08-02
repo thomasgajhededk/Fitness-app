@@ -326,7 +326,7 @@ export default function WorkoutPage() {
   );
 
   if (allExercises.length === 0) return (
-    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white max-w-md mx-auto text-center">
+    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white w-full max-w-md mx-auto text-center">
       <Dumbbell className="w-16 h-16 text-gray-600 mb-4" />
       <h2 className="text-2xl font-bold mb-2">Ingen øvelser endnu</h2>
       <p className="text-gray-400 mb-6">Opret øvelser under Indstillinger for at starte træning.</p>
@@ -335,7 +335,7 @@ export default function WorkoutPage() {
   );
 
   if (currentState === 'SETUP') return (
-    <div className="min-h-screen bg-transparent flex flex-col text-white max-w-md mx-auto">
+    <div className="min-h-screen bg-transparent flex flex-col text-white w-full max-w-md mx-auto overflow-x-clip">
       <header className="flex items-center justify-between p-4 border-b border-white/10 bg-black/40 backdrop-blur-md">
         <Link href="/" className="p-2 rounded-full hover:bg-white/10 text-gray-400 transition-colors">
           <ArrowLeft className="w-6 h-6" />
@@ -413,7 +413,7 @@ export default function WorkoutPage() {
                     <p className="font-bold text-sm truncate">{ex.name}</p>
                     {ex.category && <p className="text-[11px] text-gray-500 uppercase tracking-wider">{ex.category}</p>}
                   </div>
-                  <span className="text-[11px] text-gray-500 flex-shrink-0">
+                  <span className="text-[11px] text-gray-500 flex-shrink-0 max-w-[38%] truncate">
                     {ex.is_time_based ? 'Tid' : `${ex.recommended_reps || '?'} reps`}
                   </span>
                 </div>
@@ -435,7 +435,7 @@ export default function WorkoutPage() {
   );
 
   if (currentState === 'FINISHED') return (
-    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white max-w-md mx-auto">
+    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white w-full max-w-md mx-auto">
       <Trophy className="w-24 h-24 text-orange-500 mb-6 animate-bounce" />
       <h1 className="text-4xl font-bold tracking-tighter mb-2">FÆRDIG!</h1>
       {dagLabel && <p className="text-orange-400 font-bold mb-2">{dagLabel} fuldført</p>}
@@ -462,7 +462,7 @@ export default function WorkoutPage() {
   );
 
   return (
-    <div className="min-h-screen bg-transparent flex flex-col relative text-white max-w-md mx-auto">
+    <div className="min-h-screen bg-transparent flex flex-col relative text-white w-full max-w-md mx-auto overflow-x-clip">
       <header className="flex items-center justify-between p-4 border-b border-white/10 bg-black/40 backdrop-blur-md z-10 relative">
         <Link href="/" className="p-2 rounded-full hover:bg-white/10 text-gray-400 transition-colors">
           <ArrowLeft className="w-6 h-6" />

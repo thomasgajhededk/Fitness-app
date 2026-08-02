@@ -46,7 +46,7 @@ export default function WorkoutStartPage() {
   }, [router]);
 
   if (noProgram) return (
-    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white text-center max-w-md mx-auto">
+    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white text-center w-full max-w-md mx-auto">
       <div className="text-6xl mb-6">📋</div>
       <h2 className="text-2xl font-bold mb-3">Intet program endnu</h2>
       <p className="text-gray-400 mb-8">Generér et 3-dages program på forsiden, og kom igang.</p>
@@ -58,7 +58,7 @@ export default function WorkoutStartPage() {
   );
 
   if (allDone) return (
-    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white text-center max-w-md mx-auto">
+    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white text-center w-full max-w-md mx-auto">
       <div className="text-6xl mb-6">🏆</div>
       <h2 className="text-2xl font-bold mb-3">Alle dage fuldført!</h2>
       <p className="text-gray-400 mb-8">Du har klaret alle tre dage denne uge. Generér et nyt program for at fortsætte.</p>

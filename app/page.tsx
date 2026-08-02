@@ -154,7 +154,7 @@ export default function HomePage() {
   const completedCount = allDays.filter(d => completedDays.includes(d.label)).length;
 
   return (
-    <div className="pb-24 pt-8 px-4 max-w-md mx-auto min-h-screen flex flex-col relative text-white">
+    <div className="pb-24 pt-8 px-4 w-full max-w-md mx-auto min-h-screen flex flex-col relative text-white overflow-x-clip">
 
       <header className="mb-8 flex items-center justify-between z-10">
         <div>
