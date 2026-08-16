@@ -23,7 +23,7 @@ type Exercise = {
   door_anchor_position: string | null;
   grip_type: string | null;
   image_url: string | null;
-  user_exercise_settings: { bands: number[] | null; is_disabled: boolean }[];
+  user_exercise_settings: { bands: number[] | null; is_disabled: boolean; hiit_disabled: boolean }[];
 };
 
 type Band = { id: string; weight_kg: number };
@@ -40,11 +40,13 @@ const HIIT_REPS  = 15;
 const HIIT_COUNT = 4;
 
 // Højintens: 4 øvelser trukket fra de tilvalgte muskelgrupper, spredt så to
-// øvelser i samme gruppe ikke ligger lige efter hinanden.
+// øvelser i samme gruppe ikke ligger lige efter hinanden. Øvelser man har
+// fravalgt til højintens i indstillinger springes over.
 function buildHiitWorkout(day: Exercise[], pool: Exercise[], excludedCategories: string[]): Exercise[] {
   const byId = new Map<string, Exercise>();
   for (const ex of [...day, ...pool]) {
     if (ex.category && excludedCategories.includes(ex.category)) continue;
+    if (ex.user_exercise_settings?.[0]?.hiit_disabled) continue;
     byId.set(ex.id, ex);
   }
   return spreadCategories(shuffle([...byId.values()])).slice(0, HIIT_COUNT);
@@ -171,7 +173,7 @@ export default function WorkoutPage() {
       setUser(user);
       const [exRes, bandRes] = await Promise.all([
         supabase.from('exercises')
-          .select('id, name, category, recommended_reps, is_time_based, per_side, exercise_type, door_anchor_position, grip_type, image_url, user_exercise_settings(bands, is_disabled)')
+          .select('id, name, category, recommended_reps, is_time_based, per_side, exercise_type, door_anchor_position, grip_type, image_url, user_exercise_settings(bands, is_disabled, hiit_disabled)')
           .order('category'),
         user
           ? supabase.from('user_bands').select('id, weight_kg').eq('user_id', user.id).order('weight_kg', { ascending: true })
@@ -364,7 +366,7 @@ export default function WorkoutPage() {
     setIsSavingBands(false);
     if (!error) {
       setExercises(prev => prev.map(ex => ex.id === currentExercise.id
-        ? { ...ex, user_exercise_settings: [{ bands: pendingBands, is_disabled: false }] }
+        ? { ...ex, user_exercise_settings: [{ ...ex.user_exercise_settings?.[0], bands: pendingBands, is_disabled: false }] }
         : ex));
       setBandsSaved(true);
     }

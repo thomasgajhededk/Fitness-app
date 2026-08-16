@@ -98,6 +98,7 @@ export default function HomePage() {
   const [showHiit, setShowHiit]         = useState(false);
   const [hiitCats, setHiitCats]         = useState<string[]>([]);
   const [hiitExercises, setHiitExercises] = useState<Exercise[] | null>(null);
+  const [hiitBlocked, setHiitBlocked]     = useState<Set<string>>(new Set());
 
   // Gåtur
   const [showWalk, setShowWalk]         = useState(false);
@@ -137,12 +138,13 @@ export default function HomePage() {
         const [exRes, bandRes, setRes, progRes] = await Promise.all([
           supabase.from('exercises').select('id, name, category, exercise_type, door_anchor_position, grip_type').order('name'),
           supabase.from('user_bands').select('id, weight_kg').eq('user_id', user.id).order('weight_kg', { ascending: true }),
-          supabase.from('user_exercise_settings').select('exercise_id, bands, is_disabled').eq('user_id', user.id),
+          supabase.from('user_exercise_settings').select('exercise_id, bands, is_disabled, hiit_disabled').eq('user_id', user.id),
           supabase.from('user_programs').select('program').eq('user_id', user.id).maybeSingle(),
           loadWeek(user.id),
         ]);
 
         const disabled = new Set((setRes.data ?? []).filter(r => r.is_disabled).map(r => r.exercise_id));
+        setHiitBlocked(new Set((setRes.data ?? []).filter(r => r.hiit_disabled).map(r => r.exercise_id)));
         setExBands(Object.fromEntries((setRes.data ?? []).map(r => [r.exercise_id, r.bands ?? []])));
         if (exRes.data) setExercises((exRes.data as Exercise[]).filter(ex => !disabled.has(ex.id)));
 
@@ -202,7 +204,7 @@ export default function HomePage() {
   }
 
   function generateHiit() {
-    const pool = exercises.filter(ex => ex.category && hiitCats.includes(ex.category));
+    const pool = exercises.filter(ex => ex.category && hiitCats.includes(ex.category) && !hiitBlocked.has(ex.id));
     setHiitExercises(spreadCategories(shuffle(pool)).slice(0, 4));
   }
 

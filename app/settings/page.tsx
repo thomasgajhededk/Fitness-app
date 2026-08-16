@@ -21,7 +21,7 @@ type WorkoutSession = {
 };
 type Exercise  = { id: string; name: string; category: string | null; recommended_reps: string | null; is_time_based: boolean; per_side: boolean; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null; image_url: string | null };
 type Band      = { id: string; weight_kg: number };
-type ExSetting = { bands: number[]; is_disabled: boolean };
+type ExSetting = { bands: number[]; is_disabled: boolean; hiit_disabled: boolean };
 type AdminUser = { id: string; display_name: string | null; email: string; is_admin: boolean; workout_count: number };
 
 const CATEGORIES  = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
@@ -119,9 +119,9 @@ export default function SettingsPage() {
   }
 
   async function loadExSettings(uid: string) {
-    const { data } = await supabase.from('user_exercise_settings').select('exercise_id, bands, is_disabled').eq('user_id', uid);
+    const { data } = await supabase.from('user_exercise_settings').select('exercise_id, bands, is_disabled, hiit_disabled').eq('user_id', uid);
     if (!data) return;
-    setExSettings(Object.fromEntries(data.map(r => [r.exercise_id, { bands: r.bands ?? [], is_disabled: r.is_disabled }])));
+    setExSettings(Object.fromEntries(data.map(r => [r.exercise_id, { bands: r.bands ?? [], is_disabled: r.is_disabled, hiit_disabled: r.hiit_disabled }])));
   }
 
   async function loadBands(uid: string) {
@@ -139,7 +139,7 @@ export default function SettingsPage() {
   }
 
   function settingFor(id: string): ExSetting {
-    return exSettings[id] ?? { bands: [], is_disabled: false };
+    return exSettings[id] ?? { bands: [], is_disabled: false, hiit_disabled: false };
   }
 
   async function saveExSetting(exerciseId: string, patch: Partial<ExSetting>) {
@@ -818,6 +818,15 @@ export default function SettingsPage() {
                         className="w-full flex items-center justify-between px-5 py-3 border-t border-white/10 hover:bg-white/5 transition-colors">
                         <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Med i mine træninger</span>
                         <div className={`w-12 h-6 rounded-full flex items-center px-1 transition-colors flex-shrink-0 ${setting.is_disabled ? 'bg-white/10 justify-start' : 'bg-orange-500 justify-end'}`}>
+                          <div className="w-4 h-4 rounded-full bg-white shadow" />
+                        </div>
+                      </button>
+
+                      {/* Med i højintens */}
+                      <button onClick={() => saveExSetting(ex.id, { hiit_disabled: !setting.hiit_disabled })}
+                        className="w-full flex items-center justify-between px-5 py-3 border-t border-white/10 hover:bg-white/5 transition-colors">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">Med i højintens</span>
+                        <div className={`w-12 h-6 rounded-full flex items-center px-1 transition-colors flex-shrink-0 ${setting.hiit_disabled ? 'bg-white/10 justify-start' : 'bg-red-500 justify-end'}`}>
                           <div className="w-4 h-4 rounded-full bg-white shadow" />
                         </div>
                       </button>
