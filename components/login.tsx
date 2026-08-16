@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 import { supabase } from '@/lib/supabase/client';
-import { Activity } from 'lucide-react';
 
 export function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -26,9 +26,8 @@ export function LoginScreen() {
         <div className="absolute -top-12 -right-12 w-32 h-32 bg-orange-500/20 rounded-full blur-3xl pointer-events-none z-0"></div>
 
         <div className="relative z-10 flex flex-col items-center mb-8">
-          <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-orange-500 to-yellow-400 flex items-center justify-center font-bold text-white shadow-lg shadow-orange-500/20 mb-4">
-            <Activity className="w-8 h-8" />
-          </div>
+          <Image src="/icon-192.png" alt="Gajhedes Træning" width={64} height={64} priority
+            className="w-16 h-16 rounded-2xl border border-white/10 shadow-lg shadow-black/40 mb-4" />
           <h1 className="text-3xl font-bold tracking-tighter">Gajhedes Træning</h1>
           <p className="text-xs text-gray-400 uppercase tracking-widest mt-1">Log ind på din konto</p>
         </div>
