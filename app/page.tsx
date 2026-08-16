@@ -709,7 +709,7 @@ export default function HomePage() {
                         </div>
                         <p className="text-xs text-gray-500 mt-0.5">
                           {new Date(s.completed_date).toLocaleDateString('da-DK', { weekday: 'long', day: 'numeric', month: 'short' })}
-                          {' · '}{TYPE_LABEL[s.workout_type ?? ''] ?? 'Træning'}
+                          {!isWalk && ` · ${TYPE_LABEL[s.workout_type ?? ''] ?? 'Træning'}`}
                         </p>
                       </div>
                       <div className="flex flex-col items-end gap-1 flex-shrink-0">
