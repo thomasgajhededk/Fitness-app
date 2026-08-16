@@ -2,13 +2,24 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw, X } from 'lucide-react';
+import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw, X, Flame, Footprints, Target } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
+import MuscleHeatmap from '@/components/muscle-heatmap';
+import { CATEGORY_ORDER, shuffle, spreadCategories, getMondayISO, todayISO } from '@/lib/workout';
 import type { User } from '@supabase/supabase-js';
 
 type Exercise   = { id: string; name: string; category: string | null; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null };
 type Band       = { id: string; weight_kg: number };
 type ProgramDay = { label: string; exercises: Exercise[] };
+type Session    = {
+  id: string;
+  day_label: string;
+  workout_type: string | null;
+  completed_date: string;
+  calories_burned: number | null;
+  distance_km: number | null;
+  exercises: { id: string; name: string; category: string | null }[] | null;
+};
 
 const GRIP_OPTS = [
   { value: 'stang',      label: 'Stang'     },
@@ -17,9 +28,7 @@ const GRIP_OPTS = [
   { value: 'ankelbånd',  label: 'Ankelbånd' },
 ];
 
-const CATEGORY_ORDER = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
-
-function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
+const TYPE_LABEL: Record<string, string> = { fullbody: 'Fullbody', hoejintens: 'Højintens', walk: 'Gåtur' };
 
 function buildProgram(exercises: Exercise[], includeCardio: boolean): ProgramDay[] {
   const pool = includeCardio ? exercises : exercises.filter(e => e.category !== 'Cardio');
@@ -29,14 +38,8 @@ function buildProgram(exercises: Exercise[], includeCardio: boolean): ProgramDay
     { label: 'Dag 1', exercises: s.slice(0, n) },
     { label: 'Dag 2', exercises: s.slice(n, n * 2) },
     { label: 'Dag 3', exercises: s.slice(n * 2) },
-  ].filter(d => d.exercises.length > 0);
-}
-
-function getMondayISO(): string {
-  const d = new Date();
-  const diff = (d.getDay() === 0 ? -6 : 1 - d.getDay());
-  d.setDate(d.getDate() + diff);
-  return d.toISOString().split('T')[0];
+  ].filter(d => d.exercises.length > 0)
+   .map(d => ({ ...d, exercises: spreadCategories(d.exercises) }));
 }
 
 function countByWeight(weights: number[]): Map<number, number> {
@@ -76,7 +79,10 @@ export default function HomePage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [includeCardio, setIncludeCardio] = useState(false);
   const [hasLoaded, setHasLoaded]       = useState(false);
-  const [completedDays, setCompletedDays] = useState<string[]>([]);
+
+  // Ugens aktivitet
+  const [weekSessions, setWeekSessions] = useState<Session[]>([]);
+  const [muscleSets, setMuscleSets]     = useState<Record<string, number>>({});
 
   // Hurtig træning
   const [showQuick, setShowQuick]       = useState(false);
@@ -88,9 +94,39 @@ export default function HomePage() {
   const [quickPool, setQuickPool]       = useState<Exercise[]>([]);
   const [quickExercises, setQuickExercises] = useState<Exercise[] | null>(null);
 
-  const loadCompletedDays = useCallback(async (uid: string) => {
-    const { data } = await supabase.from('workout_sessions').select('day_label').eq('user_id', uid).gte('completed_date', getMondayISO());
-    if (data) setCompletedDays(data.map(r => r.day_label));
+  // Højintensivt fokus
+  const [showHiit, setShowHiit]         = useState(false);
+  const [hiitCats, setHiitCats]         = useState<string[]>([]);
+  const [hiitExercises, setHiitExercises] = useState<Exercise[] | null>(null);
+
+  // Gåtur
+  const [showWalk, setShowWalk]         = useState(false);
+  const [walkDistance, setWalkDistance] = useState('');
+  const [walkCalories, setWalkCalories] = useState('');
+  const [isSavingWalk, setIsSavingWalk] = useState(false);
+  const [walkError, setWalkError]       = useState<string | null>(null);
+
+  const loadWeek = useCallback(async (uid: string) => {
+    const monday = getMondayISO();
+    const [sessRes, logRes] = await Promise.all([
+      supabase.from('workout_sessions')
+        .select('id, day_label, workout_type, completed_date, calories_burned, distance_km, exercises')
+        .eq('user_id', uid).gte('completed_date', monday).order('completed_date', { ascending: false }),
+      supabase.from('workout_logs')
+        .select('exercises(category)')
+        .eq('user_id', uid).gte('created_at', new Date(`${monday}T00:00:00`).toISOString()),
+    ]);
+
+    if (sessRes.data) setWeekSessions(sessRes.data as Session[]);
+
+    if (logRes.data) {
+      const counts: Record<string, number> = {};
+      for (const row of logRes.data as unknown as { exercises: { category: string | null } | null }[]) {
+        const cat = row.exercises?.category;
+        if (cat) counts[cat] = (counts[cat] ?? 0) + 1;
+      }
+      setMuscleSets(counts);
+    }
   }, []);
 
   useEffect(() => {
@@ -103,7 +139,7 @@ export default function HomePage() {
           supabase.from('user_bands').select('id, weight_kg').eq('user_id', user.id).order('weight_kg', { ascending: true }),
           supabase.from('user_exercise_settings').select('exercise_id, bands, is_disabled').eq('user_id', user.id),
           supabase.from('user_programs').select('program').eq('user_id', user.id).maybeSingle(),
-          loadCompletedDays(user.id),
+          loadWeek(user.id),
         ]);
 
         const disabled = new Set((setRes.data ?? []).filter(r => r.is_disabled).map(r => r.exercise_id));
@@ -133,13 +169,13 @@ export default function HomePage() {
       }
       setHasLoaded(true);
     })();
-  }, [loadCompletedDays]);
+  }, [loadWeek]);
 
   useEffect(() => {
-    const onFocus = () => { if (user) loadCompletedDays(user.id); };
+    const onFocus = () => { if (user) loadWeek(user.id); };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [user, loadCompletedDays]);
+  }, [user, loadWeek]);
 
   function handleGenerate() {
     if (!exercises.length || !user) return;
@@ -161,8 +197,38 @@ export default function HomePage() {
     const ordered  = quickBudget === 25
       ? [...s.filter(e => e.exercise_type === 'compound'), ...s.filter(e => e.exercise_type !== 'compound')]
       : s;
-    setQuickExercises(ordered.slice(0, target));
+    setQuickExercises(spreadCategories(ordered.slice(0, target)));
     setQuickPool(filtered);
+  }
+
+  function generateHiit() {
+    const pool = exercises.filter(ex => ex.category && hiitCats.includes(ex.category));
+    setHiitExercises(spreadCategories(shuffle(pool)).slice(0, 4));
+  }
+
+  async function handleSaveWalk() {
+    if (!user) return;
+    const km   = parseFloat(walkDistance.replace(',', '.'));
+    const kcal = parseInt(walkCalories, 10);
+    if (!(km > 0))                  { setWalkError('Skriv hvor langt du gik (km).'); return; }
+    if (isNaN(kcal) || kcal < 0)    { setWalkError('Skriv hvor mange kalorier du forbrændte.'); return; }
+
+    setWalkError(null);
+    setIsSavingWalk(true);
+    const { error } = await supabase.from('workout_sessions').insert({
+      user_id: user.id,
+      day_label: 'Gåtur',
+      workout_type: 'walk',
+      completed_date: todayISO(),
+      distance_km: km,
+      calories_burned: kcal,
+    });
+    setIsSavingWalk(false);
+    if (error) { setWalkError(`Kunne ikke gemme gåturen: ${error.message}`); return; }
+    setWalkDistance('');
+    setWalkCalories('');
+    setShowWalk(false);
+    await loadWeek(user.id);
   }
 
   function toggleWeight(w: number) {
@@ -177,14 +243,24 @@ export default function HomePage() {
     setExcludedQuickCats(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
     setQuickExercises(null);
   }
+  function toggleHiitCat(cat: string) {
+    setHiitCats(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+    setHiitExercises(null);
+  }
 
   const quickCats     = CATEGORY_ORDER.filter(c => exercises.some(e => e.category === c));
   const ownedCounts   = countByWeight(userBands.map(b => b.weight_kg));
   const bandWeights   = [...ownedCounts.keys()].sort((a, b) => a - b);
 
-  const initials     = user?.email ? user.email.slice(0, 2).toUpperCase() : '??';
-  const allDays      = program ?? [];
+  const initials       = user?.email ? user.email.slice(0, 2).toUpperCase() : '??';
+  const allDays        = program ?? [];
+  const completedDays  = weekSessions.map(s => s.day_label);
   const completedCount = allDays.filter(d => completedDays.includes(d.label)).length;
+
+  const weekCalories = weekSessions.reduce((sum, s) => sum + (s.calories_burned ?? 0), 0);
+  const weekKm       = weekSessions.reduce((sum, s) => sum + (s.distance_km ?? 0), 0);
+  // Sessioner der ikke hører til en programdag: hurtig træning, højintens og gåture
+  const extraSessions = weekSessions.filter(s => !allDays.some(d => d.label === s.day_label));
 
   return (
     <div className="pb-24 pt-8 px-4 w-full max-w-md mx-auto min-h-screen flex flex-col relative text-white overflow-x-clip">
@@ -200,6 +276,29 @@ export default function HomePage() {
       </header>
 
       <main className="flex-1 flex flex-col gap-6 z-10">
+
+        {/* ── UGENS KROP + KALORIER ── */}
+        {user && (
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-lg">
+            <div className="flex items-start justify-between mb-5">
+              <div>
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Trænet denne uge</p>
+                <div className="flex items-baseline gap-2 mt-1">
+                  <Flame className="w-5 h-5 text-orange-500 self-center" />
+                  <span className="text-3xl font-bold tracking-tighter">{weekCalories}</span>
+                  <span className="text-sm text-gray-400 font-bold">kcal forbrændt</span>
+                </div>
+              </div>
+              {weekKm > 0 && (
+                <div className="text-right">
+                  <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Gået</p>
+                  <p className="text-lg font-bold text-green-400">{weekKm.toFixed(1)} km</p>
+                </div>
+              )}
+            </div>
+            <MuscleHeatmap sets={muscleSets} />
+          </div>
+        )}
 
         {/* ── 3-DAY GENERATOR ── */}
         <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 relative overflow-hidden">
@@ -237,7 +336,7 @@ export default function HomePage() {
 
         {/* ── HURTIG TRÆNING KNAP ── */}
         {exercises.length > 0 && (
-          <button onClick={() => { setShowQuick(true); setQuickExercises(null); }}
+          <button onClick={() => { setShowQuick(p => !p); setQuickExercises(null); }}
             className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-colors active:scale-95 shadow-lg">
             {showQuick ? <X className="w-5 h-5 text-gray-400" /> : <Zap className="w-5 h-5 text-yellow-400" />}
             {showQuick ? 'LUK HURTIG TRÆNING' : 'LAV EN HURTIG TRÆNING'}
@@ -400,6 +499,125 @@ export default function HomePage() {
           </div>
         )}
 
+        {/* ── HØJINTENSIVT FOKUS ── */}
+        {exercises.length > 0 && (
+          <button onClick={() => { setShowHiit(p => !p); setHiitExercises(null); }}
+            className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-colors active:scale-95 shadow-lg">
+            {showHiit ? <X className="w-5 h-5 text-gray-400" /> : <Target className="w-5 h-5 text-red-400" />}
+            {showHiit ? 'LUK HØJINTENSIVT FOKUS' : 'HØJINTENSIVT FOKUS'}
+          </button>
+        )}
+
+        {showHiit && (
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl overflow-hidden shadow-lg animate-in slide-in-from-bottom-4">
+            <div className="p-6 border-b border-white/10">
+              <h3 className="text-xl font-bold mb-1 flex items-center gap-2">
+                <Target className="w-5 h-5 text-red-400" /> Højintensivt fokus
+              </h3>
+              <p className="text-sm text-gray-400">4 øvelser · 5 sæt pr. øvelse · 15 gentagelser pr. sæt.</p>
+            </div>
+
+            <div className="p-6 flex flex-col gap-5">
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Vælg muskelgrupper</label>
+                <div className="flex flex-wrap gap-2">
+                  {quickCats.map(c => {
+                    const sel = hiitCats.includes(c);
+                    return (
+                      <button key={c} type="button" onClick={() => toggleHiitCat(c)}
+                        className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors active:scale-95 ${sel ? 'bg-red-500 border-red-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                        {c}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {!hiitExercises && (
+                <button onClick={generateHiit} disabled={hiitCats.length === 0}
+                  className="w-full bg-red-500 hover:bg-red-600 disabled:opacity-40 text-white font-bold py-4 rounded-2xl shadow-lg shadow-red-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
+                  <Target className="w-5 h-5" /> FIND 4 ØVELSER
+                </button>
+              )}
+            </div>
+
+            {hiitExercises !== null && (
+              <div className="border-t border-white/10 p-6">
+                {hiitExercises.length === 0 ? (
+                  <p className="text-gray-400 text-center text-sm">Ingen øvelser i de valgte muskelgrupper.</p>
+                ) : (
+                  <>
+                    <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-4 mb-4">
+                      <p className="text-red-300 font-bold text-sm">Husk: 15 gentagelser pr. sæt</p>
+                      <p className="text-xs text-red-200/70 mt-0.5">{hiitExercises.length} øvelser × 5 sæt</p>
+                    </div>
+                    <div className="space-y-2 mb-6">
+                      {hiitExercises.map((ex, i) => (
+                        <div key={ex.id} className="flex items-center gap-3 bg-white/5 rounded-2xl px-4 py-3 border border-white/10">
+                          <span className="text-red-400 font-bold text-sm w-5 flex-shrink-0">{i + 1}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-bold text-sm truncate">{ex.name}</p>
+                            {ex.category && <p className="text-[11px] text-gray-500 uppercase">{ex.category}</p>}
+                          </div>
+                          <span className="text-[11px] text-gray-500 flex-shrink-0">5 × 15</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-3">
+                      <button onClick={generateHiit}
+                        className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 font-bold py-4 rounded-2xl transition-colors active:scale-95 flex items-center justify-center gap-2">
+                        <RotateCcw className="w-4 h-4" /> Lav ny
+                      </button>
+                      <Link href={`/workout?mode=hiit&ids=${hiitExercises.map(e => e.id).join(',')}`}
+                        className="flex-[2] bg-red-500 hover:bg-red-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-red-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
+                        <Target className="w-5 h-5" /> START
+                      </Link>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── GÅTUR ── */}
+        {user && (
+          <button onClick={() => { setShowWalk(p => !p); setWalkError(null); }}
+            className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-colors active:scale-95 shadow-lg">
+            {showWalk ? <X className="w-5 h-5 text-gray-400" /> : <Footprints className="w-5 h-5 text-green-400" />}
+            {showWalk ? 'LUK GÅTUR' : 'LOG EN GÅTUR'}
+          </button>
+        )}
+
+        {showWalk && (
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-lg animate-in slide-in-from-bottom-4">
+            <h3 className="text-xl font-bold mb-1 flex items-center gap-2">
+              <Footprints className="w-5 h-5 text-green-400" /> Gåtur
+            </h3>
+            <p className="text-sm text-gray-400 mb-5">Skriv hvor langt du gik, og hvad du forbrændte.</p>
+
+            <div className="flex flex-col gap-3">
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Afstand (km)</label>
+                <input type="number" inputMode="decimal" step="0.1" value={walkDistance}
+                  onChange={e => { setWalkDistance(e.target.value); setWalkError(null); }} placeholder="Fx. 4,2"
+                  className="w-full bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-green-500 text-white placeholder-gray-500" />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Forbrændte kalorier</label>
+                <input type="number" inputMode="numeric" value={walkCalories}
+                  onChange={e => { setWalkCalories(e.target.value); setWalkError(null); }} placeholder="Fx. 210"
+                  className="w-full bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-green-500 text-white placeholder-gray-500" />
+              </div>
+              {walkError && <p className="text-red-400 text-sm font-medium bg-red-400/10 p-3 rounded-xl border border-red-400/20">{walkError}</p>}
+              <button onClick={handleSaveWalk} disabled={isSavingWalk}
+                className="w-full bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white font-bold py-4 rounded-2xl shadow-lg shadow-green-500/20 active:scale-95 transition-colors">
+                {isSavingWalk ? 'GEMMER...' : 'GEM GÅTUR'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ── UGEOVERSIGT ── */}
         {program && (
           <div className="animate-in fade-in slide-in-from-bottom-4">
@@ -413,7 +631,10 @@ export default function HomePage() {
             </div>
             <div className="flex flex-col gap-4">
               {program.map((day) => {
-                const done = completedDays.includes(day.label);
+                const session = weekSessions.find(s => s.day_label === day.label);
+                const done    = !!session;
+                // Efter en fuldført træning vises de øvelser man faktisk kom igennem
+                const shown   = session?.exercises?.length ? session.exercises : day.exercises;
                 return (
                   <div key={day.label}
                     className={`backdrop-blur-xl rounded-3xl border overflow-hidden shadow-lg transition-all ${done ? 'bg-green-500/10 border-green-500/30' : 'bg-white/5 border-white/10'}`}>
@@ -424,16 +645,27 @@ export default function HomePage() {
                           : <Circle className="w-6 h-6 text-gray-600 flex-shrink-0" />}
                         <div>
                           <h3 className={`text-lg font-bold ${done ? 'text-green-300' : 'text-white'}`}>{day.label}</h3>
-                          {done && <p className="text-xs text-green-500 font-semibold uppercase tracking-wider">Fuldført</p>}
+                          {done && (
+                            <p className="text-xs text-green-500 font-semibold uppercase tracking-wider">
+                              {TYPE_LABEL[session.workout_type ?? 'fullbody'] ?? 'Fullbody'} fuldført
+                            </p>
+                          )}
                         </div>
                       </div>
-                      <span className={`text-xs font-semibold px-3 py-1 rounded-lg uppercase ${done ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'}`}>
-                        {day.exercises.length} øvelser
-                      </span>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className={`text-xs font-semibold px-3 py-1 rounded-lg uppercase ${done ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'}`}>
+                          {shown.length} øvelser
+                        </span>
+                        {session?.calories_burned != null && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-orange-500/20 border border-orange-500/30 text-orange-300">
+                            {session.calories_burned} kcal
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="px-6 pb-4 space-y-1.5">
-                      {day.exercises.map(ex => (
-                        <div key={ex.id} className="flex items-center gap-2">
+                      {shown.map((ex, i) => (
+                        <div key={`${ex.id}-${i}`} className="flex items-center gap-2">
                           <span className={`text-xs ${done ? 'text-green-500' : 'text-orange-400'}`}>●</span>
                           <p className={`text-sm font-medium ${done ? 'text-green-200/70 line-through decoration-green-500/40' : 'text-white'}`}>{ex.name}</p>
                         </div>
@@ -451,6 +683,54 @@ export default function HomePage() {
                         </Link>
                       )}
                     </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ── ØVRIG AKTIVITET DENNE UGE ── */}
+        {extraSessions.length > 0 && (
+          <div className="animate-in fade-in">
+            <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 px-1">Øvrig aktivitet</p>
+            <div className="flex flex-col gap-3">
+              {extraSessions.map(s => {
+                const isWalk = s.workout_type === 'walk';
+                return (
+                  <div key={s.id} className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-5 shadow-lg">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          {isWalk
+                            ? <Footprints className="w-4 h-4 text-green-400 flex-shrink-0" />
+                            : <Target className="w-4 h-4 text-red-400 flex-shrink-0" />}
+                          <p className="font-bold break-words">{s.day_label}</p>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {new Date(s.completed_date).toLocaleDateString('da-DK', { weekday: 'long', day: 'numeric', month: 'short' })}
+                          {' · '}{TYPE_LABEL[s.workout_type ?? ''] ?? 'Træning'}
+                        </p>
+                      </div>
+                      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                        {s.distance_km != null && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 whitespace-nowrap">{s.distance_km} km</span>
+                        )}
+                        {s.calories_burned != null && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-orange-500/20 border border-orange-500/30 text-orange-300 whitespace-nowrap">{s.calories_burned} kcal</span>
+                        )}
+                      </div>
+                    </div>
+                    {!!s.exercises?.length && (
+                      <div className="mt-3 space-y-1">
+                        {s.exercises.map((ex, i) => (
+                          <div key={`${ex.id}-${i}`} className="flex items-center gap-2">
+                            <span className="text-xs text-gray-600">●</span>
+                            <p className="text-sm text-gray-300">{ex.name}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}

@@ -9,13 +9,23 @@ import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
 
 type WeightLog = { id: string; weight_kg: number; log_date: string };
-type WorkoutSession = { id: string; day_label: string; exercise_count: number | null; calories_burned: number | null; completed_date: string };
+type WorkoutSession = {
+  id: string;
+  day_label: string;
+  workout_type: string | null;
+  exercise_count: number | null;
+  calories_burned: number | null;
+  distance_km: number | null;
+  completed_date: string;
+  exercises: { id: string; name: string; category: string | null }[] | null;
+};
 type Exercise  = { id: string; name: string; category: string | null; recommended_reps: string | null; is_time_based: boolean; per_side: boolean; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null; image_url: string | null };
 type Band      = { id: string; weight_kg: number };
 type ExSetting = { bands: number[]; is_disabled: boolean };
 type AdminUser = { id: string; display_name: string | null; email: string; is_admin: boolean; workout_count: number };
 
 const CATEGORIES  = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
+const SESSION_TYPE_LABEL: Record<string, string> = { fullbody: 'Fullbody', hoejintens: 'Højintens', walk: 'Gåtur' };
 const ANCHOR_OPTS = [{ value: 'top', label: 'Øverst' }, { value: 'middle', label: 'Midden' }, { value: 'bottom', label: 'Bunden' }];
 const GRIP_OPTS   = [{ value: 'stang', label: 'Stang' }, { value: 'grib', label: 'Grib' }, { value: 'ingen_grib', label: 'Uden grib' }, { value: 'ankelbånd', label: 'Ankelbånd' }];
 const EMPTY_FORM  = { name: '', category: '', recommended_reps: '', is_time_based: false, per_side: false, exercise_type: '' as '' | 'compound' | 'isolation', use_door_anchor: false, door_anchor_position: 'top', use_grip: false, grip_type: 'grib' };
@@ -97,7 +107,7 @@ export default function SettingsPage() {
   }
 
   async function loadSessions(uid: string) {
-    const { data } = await supabase.from('workout_sessions').select('id, day_label, exercise_count, calories_burned, completed_date').eq('user_id', uid).order('completed_date', { ascending: false });
+    const { data } = await supabase.from('workout_sessions').select('id, day_label, workout_type, exercise_count, calories_burned, distance_km, completed_date, exercises').eq('user_id', uid).order('completed_date', { ascending: false });
     if (data) setSessions(data as WorkoutSession[]);
   }
 
@@ -701,19 +711,37 @@ export default function SettingsPage() {
               ) : (
                 <div className="space-y-2">
                   {sessions.map(s => (
-                    <div key={s.id} className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4 shadow-lg flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-bold break-words">{s.day_label}</p>
-                        <p className="text-xs text-gray-500 mt-0.5">{new Date(s.completed_date).toLocaleDateString('da-DK', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
+                    <div key={s.id} className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4 shadow-lg">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-bold break-words">{s.day_label}</p>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {new Date(s.completed_date).toLocaleDateString('da-DK', { day: 'numeric', month: 'short', year: 'numeric' })}
+                            {s.workout_type && ` · ${SESSION_TYPE_LABEL[s.workout_type] ?? s.workout_type}`}
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                          {s.distance_km != null && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 whitespace-nowrap">{s.distance_km} km</span>
+                          )}
+                          {s.exercise_count != null && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-gray-300 whitespace-nowrap">{s.exercise_count} øvelser</span>
+                          )}
+                          {s.calories_burned != null && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-orange-500/20 border border-orange-500/30 text-orange-300 whitespace-nowrap">{s.calories_burned} kcal</span>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                        {s.exercise_count != null && (
-                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-gray-300 whitespace-nowrap">{s.exercise_count} øvelser</span>
-                        )}
-                        {s.calories_burned != null && (
-                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-orange-500/20 border border-orange-500/30 text-orange-300 whitespace-nowrap">{s.calories_burned} kcal</span>
-                        )}
-                      </div>
+                      {!!s.exercises?.length && (
+                        <div className="mt-3 pt-3 border-t border-white/10 space-y-1">
+                          {s.exercises.map((ex, i) => (
+                            <div key={`${ex.id}-${i}`} className="flex items-center gap-2">
+                              <span className="text-xs text-gray-600">●</span>
+                              <p className="text-sm text-gray-300 break-words">{ex.name}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

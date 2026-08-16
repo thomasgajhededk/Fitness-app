@@ -6,8 +6,9 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useWakeLock } from '@/hooks/use-wake-lock';
 import { supabase } from '@/lib/supabase/client';
+import { CATEGORY_ORDER, shuffle, spreadCategories, todayISO } from '@/lib/workout';
 import type { User } from '@supabase/supabase-js';
-import { ArrowLeft, Play, Pause, Check, FastForward, Trophy, Dumbbell, X } from 'lucide-react';
+import { ArrowLeft, Play, Pause, Check, FastForward, Trophy, Dumbbell, X, Target } from 'lucide-react';
 
 type WorkoutState = 'SETUP' | 'EXERCISE_ACTIVE' | 'SET_REST' | 'TRANSITION' | 'FINISHED';
 
@@ -34,9 +35,20 @@ function myBands(ex: Exercise | null): number[] {
 
 const ANCHOR_LABEL: Record<string, string> = { top: 'Øverst', middle: 'Midden', bottom: 'Bunden' };
 const GRIP_LABEL: Record<string, string>   = { stang: 'Stang', grib: 'Grib', ingen_grib: 'Uden grib', 'ankelbånd': 'Ankelbånd' };
-const CATEGORY_ORDER = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
+const HIIT_SETS  = 5;
+const HIIT_REPS  = 15;
+const HIIT_COUNT = 4;
 
-function shuffle<T>(arr: T[]): T[] { return [...arr].sort(() => Math.random() - 0.5); }
+// Højintens: 4 øvelser trukket fra de tilvalgte muskelgrupper, spredt så to
+// øvelser i samme gruppe ikke ligger lige efter hinanden.
+function buildHiitWorkout(day: Exercise[], pool: Exercise[], excludedCategories: string[]): Exercise[] {
+  const byId = new Map<string, Exercise>();
+  for (const ex of [...day, ...pool]) {
+    if (ex.category && excludedCategories.includes(ex.category)) continue;
+    byId.set(ex.id, ex);
+  }
+  return spreadCategories(shuffle([...byId.values()])).slice(0, HIIT_COUNT);
+}
 
 // Bygger den endelige træningsliste ud fra fravalgte muskelgrupper og tidsbudget.
 // 25 min = kort (~55% af øvelserne, compound først). 45 min = fuldt antal (fullCount).
@@ -54,12 +66,12 @@ function buildWorkout(
     timeBudget === 25 ? [...arr.filter(e => e.exercise_type === 'compound'), ...arr.filter(e => e.exercise_type !== 'compound')] : arr;
 
   const list = compoundFirst(day.filter(allowed)).slice(0, targetCount);
-  if (list.length >= targetCount) return list;
+  if (list.length >= targetCount) return spreadCategories(list);
 
   // Erstat de fravalgte øvelser med nye fra puljen i en hvilken som helst tilvalgt muskelgruppe
   const have = new Set(list.map(e => e.id));
   const candidates = compoundFirst(shuffle(pool.filter(ex => !have.has(ex.id) && allowed(ex))));
-  return [...list, ...candidates].slice(0, targetCount);
+  return spreadCategories([...list, ...candidates].slice(0, targetCount));
 }
 
 function Tag({ label, color }: { label: string; color: string }) {
@@ -73,6 +85,8 @@ export default function WorkoutPage() {
   const idsParam      = searchParams.get('ids');
   const poolParam     = searchParams.get('pool');
   const budgetParam   = searchParams.get('budget');
+  // Højintensivt fokus valgt på forsiden: øvelserne er allerede fundet der
+  const hiitFromUrl   = searchParams.get('mode') === 'hiit';
 
   const [user, setUser]                             = useState<User | null>(null);
   const [allExercises, setAllExercises]             = useState<Exercise[]>([]);
@@ -89,7 +103,8 @@ export default function WorkoutPage() {
   const [isSavingBands, setIsSavingBands]           = useState(false);
   const [bandsSaved, setBandsSaved]                 = useState(false);
 
-  // Opsætning (tid + muskelgrupper)
+  // Opsætning (type + tid + muskelgrupper)
+  const [mode, setMode]                             = useState<'normal' | 'hiit'>(hiitFromUrl ? 'hiit' : 'normal');
   const [timeBudget, setTimeBudget]                 = useState<25 | 45>(budgetParam === '25' ? 25 : 45);
   const [excludedCategories, setExcludedCategories] = useState<string[]>([]);
   // Valgt varighed for tidsbaserede øvelser (30 / 60 / 120 sek)
@@ -107,10 +122,14 @@ export default function WorkoutPage() {
 
   const handleTimerFinishRef = useRef<() => void>(() => {});
   const sessionSavedRef      = useRef(false);
+  // Øvelser hvor mindst ét sæt er logget — sprunget-over øvelser skal ikke i historikken
+  const performedRef         = useRef<Set<string>>(new Set());
 
+  const isHiit          = mode === 'hiit';
+  const setsPerExercise = isHiit ? HIIT_SETS : 3;
   const currentExercise = exercises[currentExerciseIndex] ?? null;
   const isLastExercise  = currentExerciseIndex === exercises.length - 1;
-  const isLastSet       = currentSet === 3;
+  const isLastSet       = currentSet === setsPerExercise;
   const currentBands = myBands(currentExercise);
 
   // Hvor mange elastikker af hver vægt brugeren ejer
@@ -126,20 +145,25 @@ export default function WorkoutPage() {
     allExercises.some(ex => ex.category === c) || poolExercises.some(ex => ex.category === c));
   // Fuldt antal øvelser: hurtig træning sigter mod 9, program-dag mod dagens antal.
   const fullCount = poolParam ? Math.min(9, poolExercises.length) : allExercises.length;
-  // Memoiseret, så listen ikke blandes om på hver render (buildWorkout shuffler)
-  const previewExercises = useMemo(
-    () => buildWorkout(allExercises, poolExercises, excludedCategories, timeBudget, fullCount),
-    [allExercises, poolExercises, excludedCategories, timeBudget, fullCount],
-  );
+  // Memoiseret, så listen ikke blandes om på hver render (begge byggere shuffler).
+  // Kom man fra forsidens højintens-panel, er de 4 øvelser allerede fundet der.
+  const previewExercises = useMemo(() => {
+    if (!isHiit) return buildWorkout(allExercises, poolExercises, excludedCategories, timeBudget, fullCount);
+    if (hiitFromUrl) return allExercises;
+    return buildHiitWorkout(allExercises, poolExercises, excludedCategories);
+  }, [isHiit, hiitFromUrl, allExercises, poolExercises, excludedCategories, timeBudget, fullCount]);
   const previewCount = previewExercises.length;
+
+  // Højintens køres altid som gentagelser, også for ellers tidsbaserede øvelser
+  const isTimedNow = !isHiit && !!currentExercise?.is_time_based;
 
   // Nulstil valgt varighed når vi skifter til en ny øvelse
   useEffect(() => {
-    if (!currentExercise?.is_time_based) return;
+    if (isHiit || !currentExercise?.is_time_based) return;
     const secs = parseInt(currentExercise.recommended_reps || '45', 10) || 45;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setChosenTimeSecs(secs);
-  }, [currentExercise]);
+  }, [isHiit, currentExercise]);
 
   useEffect(() => {
     (async () => {
@@ -182,14 +206,18 @@ export default function WorkoutPage() {
   // Gem workout-session i databasen når træningen er fuldført (både program-dag og hurtig træning)
   const saveSession = useCallback(async () => {
     if (!user) return;
+    const performed = exercises.filter(ex => performedRef.current.has(ex.id));
+    const done = performed.length ? performed : exercises;
     const { data } = await supabase.from('workout_sessions').insert({
       user_id: user.id,
-      day_label: dagLabel || 'Hurtig træning',
-      completed_date: new Date().toISOString().split('T')[0],
-      exercise_count: exercises.length,
+      day_label: dagLabel || (isHiit ? 'Højintens træning' : 'Hurtig træning'),
+      workout_type: isHiit ? 'hoejintens' : 'fullbody',
+      completed_date: todayISO(),
+      exercise_count: done.length,
+      exercises: done.map(ex => ({ id: ex.id, name: ex.name, category: ex.category })),
     }).select('id').single();
     if (data) setSessionId(data.id);
-  }, [user, dagLabel, exercises.length]);
+  }, [user, dagLabel, isHiit, exercises]);
 
   async function handleSaveCalories() {
     if (!sessionId) return;
@@ -232,6 +260,7 @@ export default function WorkoutPage() {
   // Afslut det aktuelle sæt: gem log og start pausen (eller skift øvelse)
   const finishSet = useCallback(async (durationSecs: number) => {
     if (!currentExercise) return;
+    performedRef.current.add(currentExercise.id);
     await saveSetLog(currentExercise.id, currentSet, durationSecs);
     setCurrentSide('right');
     setCurrentState(isLastSet ? 'TRANSITION' : 'SET_REST');
@@ -252,12 +281,12 @@ export default function WorkoutPage() {
       } else {
         setCurrentState('FINISHED');
       }
-    } else if (currentState === 'EXERCISE_ACTIVE' && currentExercise?.is_time_based) {
+    } else if (currentState === 'EXERCISE_ACTIVE' && isTimedNow && currentExercise) {
       // Højre side færdig → vent på at brugeren starter venstre side
       if (currentExercise.per_side && currentSide === 'right') { setCurrentSide('left'); return; }
       finishSet(currentExercise.per_side ? chosenTimeSecs * 2 : chosenTimeSecs);
     }
-  }, [currentState, isLastExercise, currentExercise, currentSide, chosenTimeSecs, finishSet]);
+  }, [currentState, isLastExercise, currentExercise, isTimedNow, currentSide, chosenTimeSecs, finishSet]);
 
   useEffect(() => { handleTimerFinishRef.current = handleTimerFinish; }, [handleTimerFinish]);
 
@@ -285,7 +314,7 @@ export default function WorkoutPage() {
       setCurrentSide('left');
       return;
     }
-    const secsPerSide = currentExercise.is_time_based ? chosenTimeSecs : 0;
+    const secsPerSide = isTimedNow ? chosenTimeSecs : 0;
     await finishSet(currentExercise.per_side ? secsPerSide * 2 : secsPerSide);
   };
 
@@ -362,15 +391,43 @@ export default function WorkoutPage() {
         <Link href="/" className="p-2 rounded-full hover:bg-white/10 text-gray-400 transition-colors">
           <ArrowLeft className="w-6 h-6" />
         </Link>
-        <p className="text-[10px] text-orange-400 uppercase tracking-widest font-bold">
-          {dagLabel ? `${dagLabel} · ` : ''}Tilpas træning
+        <p className={`text-[10px] uppercase tracking-widest font-bold ${isHiit ? 'text-red-400' : 'text-orange-400'}`}>
+          {dagLabel ? `${dagLabel} · ` : ''}{isHiit ? 'Højintensivt fokus' : 'Tilpas træning'}
         </p>
         <div className="w-10" />
       </header>
 
       <main className="flex-1 overflow-y-auto p-6 flex flex-col gap-6 pb-28">
 
+        {/* Type træning */}
+        <div>
+          <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Type træning</label>
+          <div className="grid grid-cols-2 gap-3">
+            {([
+              ['normal', 'Almindelig', '3 sæt pr. øvelse', 'bg-orange-500 border-orange-500'],
+              ['hiit',   'Højintens',  `${HIIT_COUNT} øvelser · ${HIIT_SETS} sæt`, 'bg-red-500 border-red-500'],
+            ] as const).map(([val, title, sub, active]) => (
+              <button key={val} type="button" onClick={() => setMode(val)}
+                className={`flex flex-col items-start gap-1 p-4 rounded-2xl border text-left transition-colors ${mode === val ? `${active} text-white` : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                <span className="text-lg font-bold">{title}</span>
+                <span className={`text-[11px] ${mode === val ? 'text-white/80' : 'text-gray-500'}`}>{sub}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {isHiit && (
+          <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-5 flex gap-3">
+            <Target className="w-6 h-6 text-red-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-red-300 font-bold">Husk {HIIT_REPS} gentagelser pr. sæt</p>
+              <p className="text-xs text-red-200/70 mt-1">{previewCount} øvelser · {HIIT_SETS} sæt pr. øvelse · kør til failure.</p>
+            </div>
+          </div>
+        )}
+
         {/* Tidsbudget */}
+        {!isHiit && (
         <div>
           <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Hvor lang tid har du?</label>
           <div className="grid grid-cols-2 gap-3">
@@ -383,6 +440,7 @@ export default function WorkoutPage() {
             ))}
           </div>
         </div>
+        )}
 
         {/* Pause mellem øvelser */}
         <div>
@@ -398,10 +456,14 @@ export default function WorkoutPage() {
         </div>
 
         {/* Muskelgrupper */}
-        {availableCategories.length > 0 && (
+        {(!isHiit || !hiitFromUrl) && availableCategories.length > 0 && (
           <div>
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Muskelgrupper</label>
-            <p className="text-xs text-gray-500 mb-3">Tryk for at fravælge grupper — vi finder nye øvelser i stedet, så antallet holdes.</p>
+            <p className="text-xs text-gray-500 mb-3">
+              {isHiit
+                ? `Tryk for at fravælge grupper — vi finder ${HIIT_COUNT} øvelser i dem du beholder.`
+                : 'Tryk for at fravælge grupper — vi finder nye øvelser i stedet, så antallet holdes.'}
+            </p>
             <div className="flex flex-wrap gap-2">
               {availableCategories.map(cat => {
                 const active = !excludedCategories.includes(cat);
@@ -436,7 +498,7 @@ export default function WorkoutPage() {
                     {ex.category && <p className="text-[11px] text-gray-500 uppercase tracking-wider">{ex.category}</p>}
                   </div>
                   <span className="text-[11px] text-gray-500 flex-shrink-0 max-w-[38%] truncate">
-                    {ex.is_time_based ? 'Tid' : `${ex.recommended_reps || '?'} reps`}
+                    {isHiit ? `${HIIT_SETS} × ${HIIT_REPS}` : ex.is_time_based ? 'Tid' : `${ex.recommended_reps || '?'} reps`}
                   </span>
                 </div>
               ))}
@@ -448,7 +510,7 @@ export default function WorkoutPage() {
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/60 backdrop-blur-md border-t border-white/10">
         <div className="max-w-md mx-auto">
           <button onClick={handleStartWorkout} disabled={previewCount === 0}
-            className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-colors disabled:opacity-40">
+            className={`w-full text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-colors disabled:opacity-40 ${isHiit ? 'bg-red-500 hover:bg-red-600 shadow-red-500/20' : 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/20'}`}>
             START TRÆNING
           </button>
         </div>
@@ -458,9 +520,11 @@ export default function WorkoutPage() {
 
   if (currentState === 'FINISHED') return (
     <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white w-full max-w-md mx-auto">
-      <Trophy className="w-24 h-24 text-orange-500 mb-6 animate-bounce" />
+      <Trophy className={`w-24 h-24 mb-6 animate-bounce ${isHiit ? 'text-red-500' : 'text-orange-500'}`} />
       <h1 className="text-4xl font-bold tracking-tighter mb-2">FÆRDIG!</h1>
-      {dagLabel && <p className="text-orange-400 font-bold mb-2">{dagLabel} fuldført</p>}
+      <p className={`font-bold mb-2 ${isHiit ? 'text-red-400' : 'text-orange-400'}`}>
+        {dagLabel ? `${dagLabel} · ` : ''}{isHiit ? 'Højintens' : 'Fullbody'} fuldført
+      </p>
       <p className="text-gray-400 mb-8 text-center">Alle sæt er gemt. Godt arbejde.</p>
 
       {/* Kalorie-input */}
@@ -490,12 +554,12 @@ export default function WorkoutPage() {
           <ArrowLeft className="w-6 h-6" />
         </Link>
         <div className="text-center">
-          <p className="text-[10px] text-orange-400 uppercase tracking-widest font-bold">
-            {dagLabel ? `${dagLabel} · ` : ''}Øvelse {currentExerciseIndex + 1} / {exercises.length}
+          <p className={`text-[10px] uppercase tracking-widest font-bold ${isHiit ? 'text-red-400' : 'text-orange-400'}`}>
+            {isHiit ? 'Højintens · ' : dagLabel ? `${dagLabel} · ` : ''}Øvelse {currentExerciseIndex + 1} / {exercises.length}
           </p>
           <div className="flex gap-1 mt-1 justify-center">
-            {[1, 2, 3].map(n => (
-              <div key={n} className={`w-8 h-1 rounded-full ${n <= currentSet ? 'bg-orange-500' : 'bg-white/10'}`} />
+            {Array.from({ length: setsPerExercise }, (_, i) => i + 1).map(n => (
+              <div key={n} className={`h-1 rounded-full ${isHiit ? 'w-5' : 'w-8'} ${n <= currentSet ? (isHiit ? 'bg-red-500' : 'bg-orange-500') : 'bg-white/10'}`} />
             ))}
           </div>
         </div>
@@ -559,7 +623,7 @@ export default function WorkoutPage() {
                   <div>
                     <p className="text-gray-400 text-xs uppercase tracking-wider font-bold mb-1">Mål</p>
                     <p className="font-bold text-lg">
-                      {currentExercise.is_time_based ? `${chosenTimeSecs} sek` : `${currentExercise.recommended_reps || '?'} reps`}
+                      {isTimedNow ? `${chosenTimeSecs} sek` : `${isHiit ? HIIT_REPS : currentExercise.recommended_reps || '?'} reps`}
                       {currentExercise.per_side && <span className="text-gray-400 font-normal text-sm"> pr. side</span>}
                     </p>
                   </div>
@@ -572,8 +636,15 @@ export default function WorkoutPage() {
                 </div>
               </div>
 
+              {isHiit && (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-2xl px-4 py-3 mb-4 flex items-center gap-2">
+                  <Target className="w-4 h-4 text-red-400 flex-shrink-0" />
+                  <p className="text-red-300 font-bold text-sm">Husk {HIIT_REPS} gentagelser · sæt {currentSet} af {HIIT_SETS}</p>
+                </div>
+              )}
+
               <div className="flex flex-col gap-3 mt-auto">
-                {currentExercise.is_time_based ? (
+                {isTimedNow ? (
                   <>
                     {/* Varigheden vælges kun før første side, så begge sider er lige lange */}
                     {!isTimerRunning && currentSide === 'right' && (
