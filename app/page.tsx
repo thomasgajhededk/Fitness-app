@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw, X, Flame, Footprints, Target } from 'lucide-react';
+import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw, X, Flame, Footprints, Target, Timer, Trophy } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import MuscleHeatmap from '@/components/muscle-heatmap';
 import { CATEGORY_ORDER, shuffle, spreadCategories, getMondayISO, todayISO } from '@/lib/workout';
@@ -18,8 +18,12 @@ type Session    = {
   completed_date: string;
   calories_burned: number | null;
   distance_km: number | null;
+  amrap_name: string | null;
+  amrap_rounds: number | null;
   exercises: { id: string; name: string; category: string | null }[] | null;
 };
+type AmrapMove  = { name: string; reps: number };
+type Amrap      = { id: string; name: string; duration_minutes: number; exercises: AmrapMove[]; record_rounds: number | null };
 
 const GRIP_OPTS = [
   { value: 'stang',      label: 'Stang'     },
@@ -28,7 +32,7 @@ const GRIP_OPTS = [
   { value: 'ankelbånd',  label: 'Ankelbånd' },
 ];
 
-const TYPE_LABEL: Record<string, string> = { fullbody: 'Fullbody', hoejintens: 'Højintens', walk: 'Gåtur' };
+const TYPE_LABEL: Record<string, string> = { fullbody: 'Fullbody', hoejintens: 'Højintens', walk: 'Gåtur', amrap: 'AMRAP' };
 
 function buildProgram(exercises: Exercise[], includeCardio: boolean): ProgramDay[] {
   const pool = includeCardio ? exercises : exercises.filter(e => e.category !== 'Cardio');
@@ -70,6 +74,37 @@ function filterByEquipment(
   });
 }
 
+// Listen over egne AMRAP'er. `dagLabel` sættes når man tager den som dagens træning,
+// så den bliver gemt på den rigtige programdag.
+function AmrapList({ amraps, dagLabel }: { amraps: Amrap[]; dagLabel?: string }) {
+  if (!amraps.length) return (
+    <div className="text-center py-2">
+      <p className="text-sm text-gray-400 mb-3">Du har ikke oprettet nogen AMRAP endnu.</p>
+      <Link href="/settings" className="inline-flex items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/10 text-white font-bold px-5 py-3 rounded-2xl transition-colors">
+        <Settings className="w-4 h-4" /> OPRET EN AMRAP
+      </Link>
+    </div>
+  );
+  return (
+    <div className="space-y-2">
+      {amraps.map(a => (
+        <Link key={a.id} href={`/amrap/${a.id}${dagLabel ? `?dag=${encodeURIComponent(dagLabel)}` : ''}`}
+          className="flex items-center gap-3 bg-white/5 hover:bg-white/10 rounded-2xl px-4 py-3 border border-white/10 transition-colors active:scale-95">
+          <Timer className="w-5 h-5 text-blue-400 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-sm break-words">{a.name}</p>
+            <p className="text-[11px] text-gray-500">
+              {a.duration_minutes} min · {a.exercises.length} øvelser
+              {a.record_rounds != null && <span className="text-yellow-500"> · rekord {a.record_rounds} runder</span>}
+            </p>
+          </div>
+          <ChevronRight className="w-4 h-4 text-gray-600 flex-shrink-0" />
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const [user, setUser]                 = useState<User | null>(null);
   const [exercises, setExercises]       = useState<Exercise[]>([]);
@@ -100,6 +135,12 @@ export default function HomePage() {
   const [hiitExercises, setHiitExercises] = useState<Exercise[] | null>(null);
   const [hiitBlocked, setHiitBlocked]     = useState<Set<string>>(new Set());
 
+  // AMRAP
+  const [amraps, setAmraps]             = useState<Amrap[]>([]);
+  const [showAmrap, setShowAmrap]       = useState(false);
+  // Programdag hvor man er ved at vælge en AMRAP i stedet for den planlagte træning
+  const [amrapForDay, setAmrapForDay]   = useState<string | null>(null);
+
   // Gåtur
   const [showWalk, setShowWalk]         = useState(false);
   const [walkDistance, setWalkDistance] = useState('');
@@ -111,7 +152,7 @@ export default function HomePage() {
     const monday = getMondayISO();
     const [sessRes, logRes] = await Promise.all([
       supabase.from('workout_sessions')
-        .select('id, day_label, workout_type, completed_date, calories_burned, distance_km, exercises')
+        .select('id, day_label, workout_type, completed_date, calories_burned, distance_km, amrap_name, amrap_rounds, exercises')
         .eq('user_id', uid).gte('completed_date', monday).order('completed_date', { ascending: false }),
       supabase.from('workout_logs')
         .select('exercises(category)')
@@ -130,6 +171,13 @@ export default function HomePage() {
     }
   }, []);
 
+  const loadAmraps = useCallback(async (uid: string) => {
+    const { data } = await supabase.from('amrap_workouts')
+      .select('id, name, duration_minutes, exercises, record_rounds')
+      .eq('user_id', uid).order('name');
+    if (data) setAmraps(data as Amrap[]);
+  }, []);
+
   useEffect(() => {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -141,6 +189,7 @@ export default function HomePage() {
           supabase.from('user_exercise_settings').select('exercise_id, bands, is_disabled, hiit_disabled').eq('user_id', user.id),
           supabase.from('user_programs').select('program').eq('user_id', user.id).maybeSingle(),
           loadWeek(user.id),
+          loadAmraps(user.id),
         ]);
 
         const disabled = new Set((setRes.data ?? []).filter(r => r.is_disabled).map(r => r.exercise_id));
@@ -171,13 +220,13 @@ export default function HomePage() {
       }
       setHasLoaded(true);
     })();
-  }, [loadWeek]);
+  }, [loadWeek, loadAmraps]);
 
   useEffect(() => {
-    const onFocus = () => { if (user) loadWeek(user.id); };
+    const onFocus = () => { if (user) { loadWeek(user.id); loadAmraps(user.id); } };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [user, loadWeek]);
+  }, [user, loadWeek, loadAmraps]);
 
   function handleGenerate() {
     if (!exercises.length || !user) return;
@@ -582,6 +631,29 @@ export default function HomePage() {
           </div>
         )}
 
+        {/* ── AMRAP ── */}
+        {user && (
+          <button onClick={() => setShowAmrap(p => !p)}
+            className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-colors active:scale-95 shadow-lg">
+            {showAmrap ? <X className="w-5 h-5 text-gray-400" /> : <Timer className="w-5 h-5 text-blue-400" />}
+            {showAmrap ? 'LUK AMRAP' : 'KØR EN AMRAP'}
+          </button>
+        )}
+
+        {showAmrap && (
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl overflow-hidden shadow-lg animate-in slide-in-from-bottom-4">
+            <div className="p-6 border-b border-white/10">
+              <h3 className="text-xl font-bold mb-1 flex items-center gap-2">
+                <Timer className="w-5 h-5 text-blue-400" /> AMRAP
+              </h3>
+              <p className="text-sm text-gray-400">Vælg en AMRAP — så mange runder som muligt på tid.</p>
+            </div>
+            <div className="p-6">
+              <AmrapList amraps={amraps} />
+            </div>
+          </div>
+        )}
+
         {/* ── GÅTUR ── */}
         {user && (
           <button onClick={() => { setShowWalk(p => !p); setWalkError(null); }}
@@ -649,7 +721,9 @@ export default function HomePage() {
                           <h3 className={`text-lg font-bold ${done ? 'text-green-300' : 'text-white'}`}>{day.label}</h3>
                           {done && (
                             <p className="text-xs text-green-500 font-semibold uppercase tracking-wider">
-                              {TYPE_LABEL[session.workout_type ?? 'fullbody'] ?? 'Fullbody'} fuldført
+                              {session.workout_type === 'amrap' && session.amrap_name
+                                ? `AMRAP · ${session.amrap_name}`
+                                : `${TYPE_LABEL[session.workout_type ?? 'fullbody'] ?? 'Fullbody'} fuldført`}
                             </p>
                           )}
                         </div>
@@ -658,6 +732,11 @@ export default function HomePage() {
                         <span className={`text-xs font-semibold px-3 py-1 rounded-lg uppercase ${done ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'}`}>
                           {shown.length} øvelser
                         </span>
+                        {session?.amrap_rounds != null && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/30 text-blue-300">
+                            {session.amrap_rounds} runder
+                          </span>
+                        )}
                         {session?.calories_burned != null && (
                           <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-orange-500/20 border border-orange-500/30 text-orange-300">
                             {session.calories_burned} kcal
@@ -673,16 +752,28 @@ export default function HomePage() {
                         </div>
                       ))}
                     </div>
-                    <div className="px-6 pb-5">
+                    <div className="px-6 pb-5 flex flex-col gap-2">
                       {done ? (
                         <div className="w-full text-center text-green-400 text-sm font-bold py-3 rounded-2xl bg-green-500/10 border border-green-500/20">
                           ✓ Godt arbejde!
                         </div>
                       ) : (
-                        <Link href={`/workout?dag=${encodeURIComponent(day.label)}&ids=${day.exercises.map(e => e.id).join(',')}`}
-                          className="block text-center w-full bg-white/10 hover:bg-white/20 text-white border border-white/10 font-bold py-4 rounded-2xl active:scale-95 transition-colors">
-                          START {day.label.toUpperCase()}
-                        </Link>
+                        <>
+                          <Link href={`/workout?dag=${encodeURIComponent(day.label)}&ids=${day.exercises.map(e => e.id).join(',')}`}
+                            className="block text-center w-full bg-white/10 hover:bg-white/20 text-white border border-white/10 font-bold py-4 rounded-2xl active:scale-95 transition-colors">
+                            START {day.label.toUpperCase()}
+                          </Link>
+                          <button onClick={() => setAmrapForDay(prev => prev === day.label ? null : day.label)}
+                            className="w-full text-blue-400 hover:text-blue-300 text-xs font-bold uppercase tracking-wider py-2 flex items-center justify-center gap-2 transition-colors">
+                            <Timer className="w-4 h-4" />
+                            {amrapForDay === day.label ? 'Luk AMRAP' : 'Tag en AMRAP i stedet'}
+                          </button>
+                          {amrapForDay === day.label && (
+                            <div className="animate-in slide-in-from-bottom-2">
+                              <AmrapList amraps={amraps} dagLabel={day.label} />
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -698,7 +789,8 @@ export default function HomePage() {
             <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3 px-1">Øvrig aktivitet</p>
             <div className="flex flex-col gap-3">
               {extraSessions.map(s => {
-                const isWalk = s.workout_type === 'walk';
+                const isWalk  = s.workout_type === 'walk';
+                const isAmrap = s.workout_type === 'amrap';
                 return (
                   <div key={s.id} className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-5 shadow-lg">
                     <div className="flex items-start justify-between gap-3">
@@ -706,7 +798,9 @@ export default function HomePage() {
                         <div className="flex items-center gap-2">
                           {isWalk
                             ? <Footprints className="w-4 h-4 text-green-400 flex-shrink-0" />
-                            : <Target className="w-4 h-4 text-red-400 flex-shrink-0" />}
+                            : isAmrap
+                              ? <Timer className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                              : <Target className="w-4 h-4 text-red-400 flex-shrink-0" />}
                           <p className="font-bold break-words">{s.day_label}</p>
                         </div>
                         <p className="text-xs text-gray-500 mt-0.5">
@@ -717,6 +811,11 @@ export default function HomePage() {
                       <div className="flex flex-col items-end gap-1 flex-shrink-0">
                         {s.distance_km != null && (
                           <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 whitespace-nowrap">{s.distance_km} km</span>
+                        )}
+                        {s.amrap_rounds != null && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/30 text-blue-300 whitespace-nowrap flex items-center gap-1">
+                            <Trophy className="w-3 h-3" /> {s.amrap_rounds} runder
+                          </span>
                         )}
                         {s.calories_burned != null && (
                           <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-orange-500/20 border border-orange-500/30 text-orange-300 whitespace-nowrap">{s.calories_burned} kcal</span>

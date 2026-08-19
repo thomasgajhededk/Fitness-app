@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Plus, Trash2, Home, Activity, X, ChevronDown, ImageIcon, Pencil, Weight, KeyRound, UserPlus } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Home, Activity, X, ChevronDown, ImageIcon, Pencil, Weight, KeyRound, UserPlus, Timer, Trophy } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { supabase } from '@/lib/supabase/client';
 import type { User } from '@supabase/supabase-js';
@@ -16,6 +16,7 @@ type WorkoutSession = {
   exercise_count: number | null;
   calories_burned: number | null;
   distance_km: number | null;
+  amrap_rounds: number | null;
   completed_date: string;
   exercises: { id: string; name: string; category: string | null }[] | null;
 };
@@ -23,16 +24,22 @@ type Exercise  = { id: string; name: string; category: string | null; recommende
 type Band      = { id: string; weight_kg: number };
 type ExSetting = { bands: number[]; is_disabled: boolean; hiit_disabled: boolean };
 type AdminUser = { id: string; display_name: string | null; email: string; is_admin: boolean; workout_count: number };
+type AmrapMove = { name: string; reps: number };
+type Amrap     = { id: string; name: string; duration_minutes: number; exercises: AmrapMove[]; record_rounds: number | null; record_date: string | null };
 
 const CATEGORIES  = ['Bryst', 'Ryg', 'Skulder', 'Biceps', 'Triceps', 'Ben', 'Core', 'Cardio', 'Helkrop'];
-const SESSION_TYPE_LABEL: Record<string, string> = { fullbody: 'Fullbody', hoejintens: 'Højintens', walk: 'Gåtur' };
+const SESSION_TYPE_LABEL: Record<string, string> = { fullbody: 'Fullbody', hoejintens: 'Højintens', walk: 'Gåtur', amrap: 'AMRAP' };
+const AMRAP_COLS  = 'id, name, duration_minutes, exercises, record_rounds, record_date';
+const EMPTY_AMRAP = { name: '', duration_minutes: '12', exercises: [{ name: '', reps: '10' }] };
 const ANCHOR_OPTS = [{ value: 'top', label: 'Øverst' }, { value: 'middle', label: 'Midden' }, { value: 'bottom', label: 'Bunden' }];
 const GRIP_OPTS   = [{ value: 'stang', label: 'Stang' }, { value: 'grib', label: 'Grib' }, { value: 'ingen_grib', label: 'Uden grib' }, { value: 'ankelbånd', label: 'Ankelbånd' }];
 const EMPTY_FORM  = { name: '', category: '', recommended_reps: '', is_time_based: false, per_side: false, exercise_type: '' as '' | 'compound' | 'isolation', use_door_anchor: false, door_anchor_position: 'top', use_grip: false, grip_type: 'grib' };
 const EX_COLS     = 'id, name, category, recommended_reps, is_time_based, per_side, exercise_type, door_anchor_position, grip_type, image_url';
 
 type ModalMode = 'create' | 'edit';
-type Tab = 'WEIGHT' | 'EXERCISES' | 'UDSTYR' | 'USERS';
+type Tab = 'WEIGHT' | 'EXERCISES' | 'AMRAP' | 'UDSTYR' | 'USERS';
+
+const TAB_LABEL: Record<Tab, string> = { WEIGHT: 'VÆGT', EXERCISES: 'ØVELSER', AMRAP: 'AMRAP', UDSTYR: 'UDSTYR', USERS: 'BRUGERE' };
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab]         = useState<Tab>('WEIGHT');
@@ -60,6 +67,15 @@ export default function SettingsPage() {
   const [form, setForm]                   = useState(EMPTY_FORM);
   const [isSaving, setIsSaving]           = useState(false);
   const [modalError, setModalError]       = useState<string | null>(null);
+
+  // AMRAP
+  const [amraps, setAmraps]               = useState<Amrap[]>([]);
+  const [showAmrapModal, setShowAmrapModal] = useState(false);
+  const [amrapEditingId, setAmrapEditingId] = useState<string | null>(null);
+  const [amrapForm, setAmrapForm]         = useState(EMPTY_AMRAP);
+  const [isSavingAmrap, setIsSavingAmrap] = useState(false);
+  const [amrapError, setAmrapError]       = useState<string | null>(null);
+  const [isDeletingAmrapId, setIsDeletingAmrapId] = useState<string | null>(null);
 
   // Vægt-modal (pr. bruger, pr. øvelse)
   const [bandsFor, setBandsFor]           = useState<Exercise | null>(null);
@@ -92,7 +108,7 @@ export default function SettingsPage() {
       setIsAdmin(!!profile?.is_admin);
       await Promise.all([
         loadWeightLogs(user.id), loadExercises(), loadBands(user.id),
-        loadSessions(user.id), loadExSettings(user.id),
+        loadSessions(user.id), loadExSettings(user.id), loadAmraps(user.id),
       ]);
     })();
   }, []);
@@ -107,7 +123,7 @@ export default function SettingsPage() {
   }
 
   async function loadSessions(uid: string) {
-    const { data } = await supabase.from('workout_sessions').select('id, day_label, workout_type, exercise_count, calories_burned, distance_km, completed_date, exercises').eq('user_id', uid).order('completed_date', { ascending: false });
+    const { data } = await supabase.from('workout_sessions').select('id, day_label, workout_type, exercise_count, calories_burned, distance_km, amrap_rounds, completed_date, exercises').eq('user_id', uid).order('completed_date', { ascending: false });
     if (data) setSessions(data as WorkoutSession[]);
   }
 
@@ -122,6 +138,11 @@ export default function SettingsPage() {
     const { data } = await supabase.from('user_exercise_settings').select('exercise_id, bands, is_disabled, hiit_disabled').eq('user_id', uid);
     if (!data) return;
     setExSettings(Object.fromEntries(data.map(r => [r.exercise_id, { bands: r.bands ?? [], is_disabled: r.is_disabled, hiit_disabled: r.hiit_disabled }])));
+  }
+
+  async function loadAmraps(uid: string) {
+    const { data } = await supabase.from('amrap_workouts').select(AMRAP_COLS).eq('user_id', uid).order('name');
+    if (data) setAmraps(data as Amrap[]);
   }
 
   async function loadBands(uid: string) {
@@ -343,6 +364,58 @@ export default function SettingsPage() {
     setBandsFor(null);
   }
 
+  function openCreateAmrap() {
+    setAmrapEditingId(null);
+    setAmrapForm(EMPTY_AMRAP);
+    setAmrapError(null);
+    setShowAmrapModal(true);
+  }
+
+  function openEditAmrap(a: Amrap) {
+    setAmrapEditingId(a.id);
+    setAmrapForm({
+      name: a.name,
+      duration_minutes: String(a.duration_minutes),
+      exercises: a.exercises.length
+        ? a.exercises.map(m => ({ name: m.name, reps: String(m.reps) }))
+        : [{ name: '', reps: '10' }],
+    });
+    setAmrapError(null);
+    setShowAmrapModal(true);
+  }
+
+  async function handleSaveAmrap() {
+    if (!user) return;
+    const name  = amrapForm.name.trim();
+    const mins  = parseInt(amrapForm.duration_minutes, 10);
+    const moves = amrapForm.exercises
+      .map(m => ({ name: m.name.trim(), reps: parseInt(m.reps, 10) }))
+      .filter(m => m.name && m.reps > 0);
+
+    if (!name)          { setAmrapError('Giv din AMRAP et navn.'); return; }
+    if (!(mins > 0))    { setAmrapError('Skriv hvor mange minutter den varer.'); return; }
+    if (!moves.length)  { setAmrapError('Tilføj mindst én øvelse med gentagelser.'); return; }
+
+    setIsSavingAmrap(true); setAmrapError(null);
+    const payload = { name, duration_minutes: mins, exercises: moves };
+    const { error } = amrapEditingId
+      ? await supabase.from('amrap_workouts').update(payload).eq('id', amrapEditingId)
+      : await supabase.from('amrap_workouts').insert({ user_id: user.id, ...payload });
+    setIsSavingAmrap(false);
+    if (error) { setAmrapError('Fejl: ' + error.message); return; }
+    await loadAmraps(user.id);
+    setShowAmrapModal(false);
+  }
+
+  async function handleDeleteAmrap(a: Amrap) {
+    if (!user) return;
+    if (!confirm(`Slet "${a.name}"? Rekorden på den forsvinder også.`)) return;
+    setIsDeletingAmrapId(a.id);
+    const { error } = await supabase.from('amrap_workouts').delete().eq('id', a.id);
+    setIsDeletingAmrapId(null);
+    if (!error) setAmraps(prev => prev.filter(x => x.id !== a.id));
+  }
+
   async function handleCreateUser() {
     setUserBusy(true); setUserError(null); setUserNotice(null);
     const res = await fetch('/api/admin/users', {
@@ -386,7 +459,9 @@ export default function SettingsPage() {
 
   const chartData    = weightLogs.map(l => ({ date: new Date(l.log_date).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' }), weight: l.weight_kg }));
   const latestWeight = weightLogs.length ? weightLogs[weightLogs.length - 1].weight_kg : '--';
-  const tabs: Tab[]  = isAdmin ? ['WEIGHT', 'EXERCISES', 'UDSTYR', 'USERS'] : ['WEIGHT', 'EXERCISES', 'UDSTYR'];
+  const tabs: Tab[]  = isAdmin
+    ? ['WEIGHT', 'EXERCISES', 'AMRAP', 'UDSTYR', 'USERS']
+    : ['WEIGHT', 'EXERCISES', 'AMRAP', 'UDSTYR'];
 
   function equipmentSummary(ex: Exercise) {
     const parts: string[] = [];
@@ -632,6 +707,72 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {/* ── AMRAP-MODAL ── */}
+      {showAmrapModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end justify-center"
+          onClick={e => { if (e.target === e.currentTarget) setShowAmrapModal(false); }}>
+          <div className="w-full max-w-md bg-[#1c1b1b] border border-white/10 rounded-t-3xl p-6 shadow-2xl animate-in slide-in-from-bottom-4 duration-300 max-h-[92vh] overflow-y-auto">
+
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-bold tracking-tighter">{amrapEditingId ? 'Rediger AMRAP' : 'Ny AMRAP'}</h2>
+              <button onClick={() => setShowAmrapModal(false)} className="p-2 rounded-full hover:bg-white/10 text-gray-400"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div className="flex flex-col gap-5">
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Navn *</label>
+                <input type="text" value={amrapForm.name} onChange={e => setAmrapForm({ ...amrapForm, name: e.target.value })}
+                  placeholder="Fx. Cindy"
+                  className="w-full bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-orange-500 text-white placeholder-gray-500" />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Varighed (minutter) *</label>
+                <input type="number" inputMode="numeric" min="1" value={amrapForm.duration_minutes}
+                  onChange={e => setAmrapForm({ ...amrapForm, duration_minutes: e.target.value })}
+                  placeholder="Fx. 20"
+                  className="w-full bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-orange-500 text-white placeholder-gray-500" />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Øvelser pr. runde *</label>
+                <p className="text-[11px] text-gray-500 mb-3">Skriv øvelsen og hvor mange gentagelser der skal laves i hver runde.</p>
+                <div className="flex flex-col gap-2">
+                  {amrapForm.exercises.map((m, i) => (
+                    <div key={i} className="flex gap-2">
+                      <input type="text" value={m.name}
+                        onChange={e => setAmrapForm({ ...amrapForm, exercises: amrapForm.exercises.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })}
+                        placeholder="Fx. Pull ups"
+                        className="flex-1 min-w-0 bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-orange-500 text-white placeholder-gray-500" />
+                      <input type="number" inputMode="numeric" min="1" value={m.reps}
+                        onChange={e => setAmrapForm({ ...amrapForm, exercises: amrapForm.exercises.map((x, j) => j === i ? { ...x, reps: e.target.value } : x) })}
+                        placeholder="Reps"
+                        className="w-20 flex-shrink-0 bg-black/40 rounded-2xl px-3 py-3 border border-white/10 focus:outline-none focus:border-orange-500 text-white placeholder-gray-500" />
+                      <button type="button" onClick={() => setAmrapForm({ ...amrapForm, exercises: amrapForm.exercises.filter((_, j) => j !== i) })}
+                        disabled={amrapForm.exercises.length === 1}
+                        className="p-3 text-gray-400 hover:text-red-400 bg-white/5 rounded-2xl border border-white/10 transition-colors disabled:opacity-30 flex-shrink-0">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setAmrapForm({ ...amrapForm, exercises: [...amrapForm.exercises, { name: '', reps: '10' }] })}
+                  className="w-full mt-2 bg-white/5 border border-dashed border-white/20 hover:bg-white/10 text-orange-400 font-bold py-3 rounded-2xl flex items-center justify-center gap-2 transition-colors">
+                  <Plus className="w-4 h-4" /> TILFØJ ØVELSE
+                </button>
+              </div>
+
+              {amrapError && <p className="text-red-400 text-sm font-medium bg-red-400/10 p-3 rounded-xl border border-red-400/20">{amrapError}</p>}
+
+              <button type="button" onClick={handleSaveAmrap} disabled={isSavingAmrap}
+                className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 transition-colors disabled:opacity-50 active:scale-95">
+                {isSavingAmrap ? 'GEMMER...' : amrapEditingId ? 'GEM ÆNDRINGER' : 'OPRET AMRAP'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── ADGANGSKODE-MODAL ── */}
       {pwFor && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end justify-center"
@@ -663,8 +804,8 @@ export default function SettingsPage() {
       <div className="flex p-4 gap-2">
         {tabs.map(tab => (
           <button key={tab} onClick={() => setActiveTab(tab)}
-            className={`flex-1 py-3 rounded-2xl font-bold tracking-wide text-[11px] transition-colors ${activeTab === tab ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10'}`}>
-            {tab === 'WEIGHT' ? 'VÆGT' : tab === 'EXERCISES' ? 'ØVELSER' : tab === 'UDSTYR' ? 'UDSTYR' : 'BRUGERE'}
+            className={`flex-1 py-3 rounded-2xl font-bold tracking-wide text-[10px] transition-colors ${activeTab === tab ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10'}`}>
+            {TAB_LABEL[tab]}
           </button>
         ))}
       </div>
@@ -723,6 +864,9 @@ export default function SettingsPage() {
                         <div className="flex flex-col items-end gap-1 flex-shrink-0">
                           {s.distance_km != null && (
                             <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 whitespace-nowrap">{s.distance_km} km</span>
+                          )}
+                          {s.amrap_rounds != null && (
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/30 text-blue-300 whitespace-nowrap">{s.amrap_rounds} runder</span>
                           )}
                           {s.exercise_count != null && (
                             <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-gray-300 whitespace-nowrap">{s.exercise_count} øvelser</span>
@@ -833,6 +977,71 @@ export default function SettingsPage() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── AMRAP ── */}
+        {activeTab === 'AMRAP' && (
+          <div className="animate-in fade-in">
+            <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-6 mb-4 shadow-lg">
+              <h2 className="text-sm font-bold uppercase text-gray-400 mb-1">Dine AMRAP&apos;er</h2>
+              <p className="text-xs text-gray-500">
+                AMRAP = så mange runder som muligt. Skriv øvelserne, gentagelser pr. runde og hvor lang tid der er.
+                Så kan du vælge den som dagens træning eller som en hurtig træning.
+              </p>
+            </div>
+
+            <button onClick={openCreateAmrap}
+              className="w-full bg-white/5 border border-dashed border-white/20 hover:bg-white/10 text-orange-400 font-bold py-4 rounded-3xl flex items-center justify-center gap-2 mb-4 transition-colors">
+              <Plus className="w-5 h-5" /> OPRET NY AMRAP
+            </button>
+
+            {amraps.length === 0 ? (
+              <p className="text-center text-gray-500 italic text-sm py-8">Ingen AMRAP&apos;er endnu.</p>
+            ) : (
+              <div className="space-y-3">
+                {amraps.map(a => (
+                  <div key={a.id} className="bg-white/5 backdrop-blur-xl rounded-3xl border border-white/10 overflow-hidden shadow-lg">
+                    <div className="p-5 flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-lg break-words">{a.name}</p>
+                        <div className="flex flex-wrap items-center gap-2 mt-1">
+                          <span className="text-xs text-orange-400 uppercase font-semibold flex items-center gap-1">
+                            <Timer className="w-3.5 h-3.5" /> {a.duration_minutes} min
+                          </span>
+                          <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-gray-300">
+                            {a.exercises.length} øvelser
+                          </span>
+                          {a.record_rounds != null && (
+                            <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 flex items-center gap-1">
+                              <Trophy className="w-3 h-3" /> Rekord {a.record_rounds} runder
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <button onClick={() => openEditAmrap(a)} title="Rediger AMRAP"
+                          className="p-2 text-gray-400 hover:text-orange-400 transition-colors bg-white/5 rounded-full border border-white/10">
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => handleDeleteAmrap(a)} disabled={isDeletingAmrapId === a.id} title="Slet AMRAP"
+                          className="p-2 text-gray-400 hover:text-red-400 transition-colors bg-white/5 rounded-full border border-white/10 disabled:opacity-50">
+                          {isDeletingAmrapId === a.id ? <div className="w-4 h-4 border-2 border-white/10 border-t-red-400 rounded-full animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="px-5 pb-5 pt-1 border-t border-white/10 space-y-1.5">
+                      {a.exercises.map((m, i) => (
+                        <div key={i} className="flex items-center justify-between gap-3">
+                          <p className="text-sm text-gray-300 break-words min-w-0">{m.name}</p>
+                          <span className="text-sm font-bold text-orange-400 flex-shrink-0">{m.reps} reps</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
