@@ -2,15 +2,16 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw, X, Flame, Footprints, Target, Timer, Trophy } from 'lucide-react';
+import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw, X, Flame, Footprints, Target, Timer, Trophy, Shuffle, ListPlus } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import MuscleHeatmap from '@/components/muscle-heatmap';
 import { CATEGORY_ORDER, shuffle, spreadCategories, getMondayISO, todayISO } from '@/lib/workout';
 import type { User } from '@supabase/supabase-js';
 
-type Exercise   = { id: string; name: string; category: string | null; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null };
+type Exercise   = { id: string; name: string; category: string | null; recommended_reps: string | null; is_time_based: boolean | null; exercise_type: string | null; door_anchor_position: string | null; grip_type: string | null };
 type Band       = { id: string; weight_kg: number };
 type ProgramDay = { label: string; exercises: Exercise[] };
+type ProgramRow = { program: ProgramDay[]; week_start: string | null; include_cardio: boolean | null; auto_shuffle: boolean | null };
 type Session    = {
   id: string;
   day_label: string;
@@ -114,6 +115,15 @@ export default function HomePage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [includeCardio, setIncludeCardio] = useState(false);
   const [hasLoaded, setHasLoaded]       = useState(false);
+  // Ugentlig blanding: nye øvelser på dagene hver mandag
+  const [autoShuffle, setAutoShuffle]   = useState(true);
+  const [justShuffled, setJustShuffled] = useState(false);
+
+  // Byg selv dagens træning
+  const [showBuilder, setShowBuilder]   = useState(false);
+  const [builderIds, setBuilderIds]     = useState<string[]>([]);
+  const [builderMode, setBuilderMode]   = useState<'normal' | 'hiit'>('normal');
+  const [builderCat, setBuilderCat]     = useState<string | null>(null);
 
   // Ugens aktivitet
   const [weekSessions, setWeekSessions] = useState<Session[]>([]);
@@ -184,10 +194,10 @@ export default function HomePage() {
       setUser(user);
       if (user) {
         const [exRes, bandRes, setRes, progRes] = await Promise.all([
-          supabase.from('exercises').select('id, name, category, exercise_type, door_anchor_position, grip_type').order('name'),
+          supabase.from('exercises').select('id, name, category, recommended_reps, is_time_based, exercise_type, door_anchor_position, grip_type').order('name'),
           supabase.from('user_bands').select('id, weight_kg').eq('user_id', user.id).order('weight_kg', { ascending: true }),
           supabase.from('user_exercise_settings').select('exercise_id, bands, is_disabled, hiit_disabled').eq('user_id', user.id),
-          supabase.from('user_programs').select('program').eq('user_id', user.id).maybeSingle(),
+          supabase.from('user_programs').select('program, week_start, include_cardio, auto_shuffle').eq('user_id', user.id).maybeSingle(),
           loadWeek(user.id),
           loadAmraps(user.id),
         ]);
@@ -195,7 +205,8 @@ export default function HomePage() {
         const disabled = new Set((setRes.data ?? []).filter(r => r.is_disabled).map(r => r.exercise_id));
         setHiitBlocked(new Set((setRes.data ?? []).filter(r => r.hiit_disabled).map(r => r.exercise_id)));
         setExBands(Object.fromEntries((setRes.data ?? []).map(r => [r.exercise_id, r.bands ?? []])));
-        if (exRes.data) setExercises((exRes.data as Exercise[]).filter(ex => !disabled.has(ex.id)));
+        const activeEx = ((exRes.data ?? []) as Exercise[]).filter(ex => !disabled.has(ex.id));
+        setExercises(activeEx);
 
         if (bandRes.data) {
           const bs = bandRes.data as Band[];
@@ -204,7 +215,25 @@ export default function HomePage() {
         }
 
         if (progRes.data?.program) {
-          setProgram(progRes.data.program as ProgramDay[]);
+          const row    = progRes.data as ProgramRow;
+          const cardio = row.include_cardio ?? false;
+          const auto   = row.auto_shuffle ?? true;
+          const monday = getMondayISO();
+          setIncludeCardio(cardio);
+          setAutoShuffle(auto);
+
+          // Ny uge → bland øvelserne så man ikke kører det samme program igen
+          if (auto && row.week_start !== monday && activeEx.length) {
+            const p = buildProgram(activeEx, cardio);
+            setProgram(p);
+            setJustShuffled(true);
+            await supabase.from('user_programs').upsert({
+              user_id: user.id, program: p, week_start: monday,
+              include_cardio: cardio, auto_shuffle: auto, updated_at: new Date().toISOString(),
+            });
+          } else {
+            setProgram(row.program);
+          }
         } else {
           // Engangsflytning af det program der lå i browseren
           try {
@@ -212,7 +241,10 @@ export default function HomePage() {
             if (s) {
               const p = JSON.parse(s) as ProgramDay[];
               setProgram(p);
-              await supabase.from('user_programs').upsert({ user_id: user.id, program: p, updated_at: new Date().toISOString() });
+              await supabase.from('user_programs').upsert({
+                user_id: user.id, program: p, week_start: getMondayISO(),
+                include_cardio: false, auto_shuffle: true, updated_at: new Date().toISOString(),
+              });
               localStorage.removeItem('jaafit_program');
             }
           } catch { /* ignore */ }
@@ -231,12 +263,31 @@ export default function HomePage() {
   function handleGenerate() {
     if (!exercises.length || !user) return;
     setIsGenerating(true);
+    setJustShuffled(false);
     setTimeout(async () => {
       const p = buildProgram(exercises, includeCardio);
       setProgram(p);
-      await supabase.from('user_programs').upsert({ user_id: user.id, program: p, updated_at: new Date().toISOString() });
+      await supabase.from('user_programs').upsert({
+        user_id: user.id, program: p, week_start: getMondayISO(),
+        include_cardio: includeCardio, auto_shuffle: autoShuffle, updated_at: new Date().toISOString(),
+      });
       setIsGenerating(false);
     }, 600);
+  }
+
+  async function toggleAutoShuffle() {
+    const next = !autoShuffle;
+    setAutoShuffle(next);
+    if (user && program) {
+      await supabase.from('user_programs').upsert({
+        user_id: user.id, program, week_start: getMondayISO(),
+        include_cardio: includeCardio, auto_shuffle: next, updated_at: new Date().toISOString(),
+      });
+    }
+  }
+
+  function toggleBuilderExercise(id: string) {
+    setBuilderIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   }
 
   function generateQuick() {
@@ -300,6 +351,7 @@ export default function HomePage() {
   }
 
   const quickCats     = CATEGORY_ORDER.filter(c => exercises.some(e => e.category === c));
+  const builderList   = builderCat ? exercises.filter(e => e.category === builderCat) : exercises;
   const ownedCounts   = countByWeight(userBands.map(b => b.weight_kg));
   const bandWeights   = [...ownedCounts.keys()].sort((a, b) => a - b);
 
@@ -375,6 +427,23 @@ export default function HomePage() {
                   <div className="w-4 h-4 rounded-full bg-white shadow" />
                 </div>
               </button>
+              {/* Ugentlig blanding */}
+              <button type="button" onClick={toggleAutoShuffle}
+                className={`flex items-center justify-between w-full px-4 py-3 mb-4 rounded-2xl border transition-colors ${autoShuffle ? 'bg-blue-500/20 border-blue-500/40 text-blue-400' : 'bg-white/5 border-white/10 text-gray-400'}`}>
+                <span className="text-left">
+                  <span className="text-sm font-bold uppercase tracking-wider block">Bland hver uge</span>
+                  <span className="text-[11px] text-gray-500">Nye øvelser på dagene hver mandag</span>
+                </span>
+                <div className={`w-12 h-6 rounded-full flex items-center px-1 transition-colors flex-shrink-0 ${autoShuffle ? 'bg-blue-500 justify-end' : 'bg-white/10 justify-start'}`}>
+                  <div className="w-4 h-4 rounded-full bg-white shadow" />
+                </div>
+              </button>
+              {justShuffled && (
+                <div className="flex items-center gap-2 mb-4 px-4 py-3 rounded-2xl bg-blue-500/10 border border-blue-500/30">
+                  <Shuffle className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                  <p className="text-xs text-blue-300 font-bold">Ny uge — dine øvelser er blandet på ny.</p>
+                </div>
+              )}
               <button onClick={handleGenerate} disabled={isGenerating}
                 className="w-full bg-orange-500 hover:bg-orange-600 disabled:opacity-60 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-500/20 active:scale-95 transition-colors flex items-center justify-center gap-2">
                 <RefreshCw className={`w-5 h-5 ${isGenerating ? 'animate-spin' : ''}`} />
@@ -628,6 +697,107 @@ export default function HomePage() {
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── BYG DIN EGEN TRÆNING ── */}
+        {exercises.length > 0 && (
+          <button onClick={() => setShowBuilder(p => !p)}
+            className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-colors active:scale-95 shadow-lg">
+            {showBuilder ? <X className="w-5 h-5 text-gray-400" /> : <ListPlus className="w-5 h-5 text-purple-400" />}
+            {showBuilder ? 'LUK EGEN TRÆNING' : 'BYG DIN EGEN TRÆNING'}
+          </button>
+        )}
+
+        {showBuilder && (
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl overflow-hidden shadow-lg animate-in slide-in-from-bottom-4">
+            <div className="p-6 border-b border-white/10">
+              <h3 className="text-xl font-bold mb-1 flex items-center gap-2">
+                <ListPlus className="w-5 h-5 text-purple-400" /> Din egen træning
+              </h3>
+              <p className="text-sm text-gray-400">Vælg selv øvelserne til dagens træning — i den rækkefølge du trykker.</p>
+            </div>
+
+            <div className="p-6 flex flex-col gap-5">
+              {/* Type træning */}
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Type træning</label>
+                <div className="grid grid-cols-2 gap-3">
+                  {([
+                    ['normal', 'Almindelig', '3 sæt · anbefalede reps', 'bg-orange-500 border-orange-500'],
+                    ['hiit',   'Intens',     '5 sæt · 15 reps',         'bg-red-500 border-red-500'],
+                  ] as const).map(([val, title, sub, active]) => (
+                    <button key={val} type="button" onClick={() => setBuilderMode(val)}
+                      className={`flex flex-col items-start gap-1 p-4 rounded-2xl border text-left transition-colors active:scale-95 ${builderMode === val ? `${active} text-white` : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                      <span className="text-lg font-bold">{title}</span>
+                      <span className={`text-[11px] ${builderMode === val ? 'text-white/80' : 'text-gray-500'}`}>{sub}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Filter på muskelgruppe */}
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Muskelgruppe</label>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setBuilderCat(null)}
+                    className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors active:scale-95 ${builderCat === null ? 'bg-purple-500 border-purple-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                    Alle
+                  </button>
+                  {quickCats.map(c => (
+                    <button key={c} type="button" onClick={() => setBuilderCat(prev => prev === c ? null : c)}
+                      className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors active:scale-95 ${builderCat === c ? 'bg-purple-500 border-purple-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Øvelsesliste */}
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">
+                  Vælg øvelser {builderIds.length > 0 && <span className="text-purple-400">({builderIds.length} valgt)</span>}
+                </label>
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                  {builderList.map(ex => {
+                    const idx = builderIds.indexOf(ex.id);
+                    const sel = idx !== -1;
+                    return (
+                      <button key={ex.id} type="button" onClick={() => toggleBuilderExercise(ex.id)}
+                        className={`w-full flex items-center gap-3 rounded-2xl px-4 py-3 border text-left transition-colors active:scale-95 ${sel ? 'bg-purple-500/20 border-purple-500/40' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
+                        <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0 ${sel ? 'bg-purple-500 text-white' : 'bg-white/10 text-gray-500'}`}>
+                          {sel ? idx + 1 : '+'}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-sm truncate">{ex.name}</p>
+                          {ex.category && <p className="text-[11px] text-gray-500 uppercase tracking-wider">{ex.category}</p>}
+                        </div>
+                        <span className="text-[11px] text-gray-500 flex-shrink-0">
+                          {builderMode === 'hiit' ? '5 × 15' : ex.is_time_based ? 'Tid' : `${ex.recommended_reps || '?'} reps`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-white/10 p-6 flex gap-3">
+              <button onClick={() => setBuilderIds([])} disabled={builderIds.length === 0}
+                className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 font-bold py-4 rounded-2xl transition-colors active:scale-95 disabled:opacity-40">
+                RYD
+              </button>
+              {builderIds.length > 0 ? (
+                <Link href={`/workout?custom=1&mode=${builderMode}&ids=${builderIds.join(',')}`}
+                  className={`flex-[2] text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-colors flex items-center justify-center gap-2 ${builderMode === 'hiit' ? 'bg-red-500 hover:bg-red-600 shadow-red-500/20' : 'bg-orange-500 hover:bg-orange-600 shadow-orange-500/20'}`}>
+                  <Dumbbell className="w-5 h-5" /> START ({builderIds.length})
+                </Link>
+              ) : (
+                <div className="flex-[2] bg-white/5 border border-white/10 text-gray-500 font-bold py-4 rounded-2xl flex items-center justify-center text-sm">
+                  Vælg mindst én øvelse
+                </div>
+              )}
+            </div>
           </div>
         )}
 

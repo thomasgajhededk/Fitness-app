@@ -8,7 +8,7 @@ import { useWakeLock } from '@/hooks/use-wake-lock';
 import { supabase } from '@/lib/supabase/client';
 import { CATEGORY_ORDER, shuffle, spreadCategories, todayISO } from '@/lib/workout';
 import type { User } from '@supabase/supabase-js';
-import { ArrowLeft, Play, Pause, Check, FastForward, Trophy, Dumbbell, X, Target } from 'lucide-react';
+import { ArrowLeft, Play, Pause, Check, FastForward, Trophy, Dumbbell, X, Target, Repeat } from 'lucide-react';
 
 type WorkoutState = 'SETUP' | 'EXERCISE_ACTIVE' | 'SET_REST' | 'TRANSITION' | 'FINISHED';
 
@@ -89,6 +89,8 @@ export default function WorkoutPage() {
   const budgetParam   = searchParams.get('budget');
   // Højintensivt fokus valgt på forsiden: øvelserne er allerede fundet der
   const hiitFromUrl   = searchParams.get('mode') === 'hiit';
+  // Egen træning bygget på forsiden: listen bruges præcis som den er
+  const isCustom      = searchParams.get('custom') === '1';
 
   const [user, setUser]                             = useState<User | null>(null);
   const [allExercises, setAllExercises]             = useState<Exercise[]>([]);
@@ -109,6 +111,10 @@ export default function WorkoutPage() {
   const [mode, setMode]                             = useState<'normal' | 'hiit'>(hiitFromUrl ? 'hiit' : 'normal');
   const [timeBudget, setTimeBudget]                 = useState<25 | 45>(budgetParam === '25' ? 25 : 45);
   const [excludedCategories, setExcludedCategories] = useState<string[]>([]);
+  // Byt øvelser ud: `swappedList` er den redigerede liste, `swapIndex` den plads der vælges til
+  const [swappedList, setSwappedList]               = useState<Exercise[] | null>(null);
+  const [swapIndex, setSwapIndex]                   = useState<number | null>(null);
+  const [swapCat, setSwapCat]                       = useState<string | null>(null);
   // Valgt varighed for tidsbaserede øvelser (30 / 60 / 120 sek)
   const [chosenTimeSecs, setChosenTimeSecs]         = useState(45);
   // Pause mellem sæt og øvelser (30 / 60 / 90 sek)
@@ -149,12 +155,33 @@ export default function WorkoutPage() {
   const fullCount = poolParam ? Math.min(9, poolExercises.length) : allExercises.length;
   // Memoiseret, så listen ikke blandes om på hver render (begge byggere shuffler).
   // Kom man fra forsidens højintens-panel, er de 4 øvelser allerede fundet der.
-  const previewExercises = useMemo(() => {
+  const autoExercises = useMemo(() => {
+    if (isCustom) return allExercises;
     if (!isHiit) return buildWorkout(allExercises, poolExercises, excludedCategories, timeBudget, fullCount);
     if (hiitFromUrl) return allExercises;
     return buildHiitWorkout(allExercises, poolExercises, excludedCategories);
-  }, [isHiit, hiitFromUrl, allExercises, poolExercises, excludedCategories, timeBudget, fullCount]);
-  const previewCount = previewExercises.length;
+  }, [isCustom, isHiit, hiitFromUrl, allExercises, poolExercises, excludedCategories, timeBudget, fullCount]);
+  // Har man byttet øvelser ud, vinder den redigerede liste over den automatiske
+  const previewExercises = swappedList ?? autoExercises;
+  const previewCount     = previewExercises.length;
+
+  // Øvelser man kan bytte til: hele puljen minus dem der allerede er med
+  const swapCandidates = useMemo(() => {
+    if (swapIndex === null) return [];
+    const inUse = new Set(previewExercises.filter((_, i) => i !== swapIndex).map(e => e.id));
+    const byId  = new Map<string, Exercise>();
+    for (const ex of [...allExercises, ...poolExercises]) {
+      if (!inUse.has(ex.id)) byId.set(ex.id, ex);
+    }
+    const replacing = previewExercises[swapIndex];
+    const list      = [...byId.values()].filter(ex => !swapCat || ex.category === swapCat);
+    // Samme muskelgruppe først, så man nemmest rammer noget tilsvarende
+    return list.sort((a, b) => {
+      const sameA = a.category === replacing?.category ? 0 : 1;
+      const sameB = b.category === replacing?.category ? 0 : 1;
+      return sameA - sameB || a.name.localeCompare(b.name, 'da');
+    });
+  }, [swapIndex, swapCat, previewExercises, allExercises, poolExercises]);
 
   // Højintens køres altid som gentagelser, også for ellers tidsbaserede øvelser
   const isTimedNow = !isHiit && !!currentExercise?.is_time_based;
@@ -212,14 +239,14 @@ export default function WorkoutPage() {
     const done = performed.length ? performed : exercises;
     const { data } = await supabase.from('workout_sessions').insert({
       user_id: user.id,
-      day_label: dagLabel || (isHiit ? 'Højintens træning' : 'Hurtig træning'),
+      day_label: dagLabel || (isCustom ? 'Egen træning' : isHiit ? 'Højintens træning' : 'Hurtig træning'),
       workout_type: isHiit ? 'hoejintens' : 'fullbody',
       completed_date: todayISO(),
       exercise_count: done.length,
       exercises: done.map(ex => ({ id: ex.id, name: ex.name, category: ex.category })),
     }).select('id').single();
     if (data) setSessionId(data.id);
-  }, [user, dagLabel, isHiit, exercises]);
+  }, [user, dagLabel, isHiit, isCustom, exercises]);
 
   async function handleSaveCalories() {
     if (!sessionId) return;
@@ -344,8 +371,16 @@ export default function WorkoutPage() {
     setCurrentState('EXERCISE_ACTIVE');
   };
 
+  // Ændrer man opsætningen, bygges listen forfra — så ryger de manuelle bytninger
   function toggleCategory(cat: string) {
+    setSwappedList(null);
     setExcludedCategories(prev => prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]);
+  }
+
+  function applySwap(replacement: Exercise) {
+    if (swapIndex === null) return;
+    setSwappedList(previewExercises.map((cur, i) => i === swapIndex ? replacement : cur));
+    setSwapIndex(null);
   }
 
   function addPendingBand(weight: number) {
@@ -394,7 +429,7 @@ export default function WorkoutPage() {
           <ArrowLeft className="w-6 h-6" />
         </Link>
         <p className={`text-[10px] uppercase tracking-widest font-bold ${isHiit ? 'text-red-400' : 'text-orange-400'}`}>
-          {dagLabel ? `${dagLabel} · ` : ''}{isHiit ? 'Højintensivt fokus' : 'Tilpas træning'}
+          {dagLabel ? `${dagLabel} · ` : ''}{isCustom ? 'Din egen træning' : isHiit ? 'Højintensivt fokus' : 'Tilpas træning'}
         </p>
         <div className="w-10" />
       </header>
@@ -409,7 +444,7 @@ export default function WorkoutPage() {
               ['normal', 'Almindelig', '3 sæt pr. øvelse', 'bg-orange-500 border-orange-500'],
               ['hiit',   'Højintens',  `${HIIT_COUNT} øvelser · ${HIIT_SETS} sæt`, 'bg-red-500 border-red-500'],
             ] as const).map(([val, title, sub, active]) => (
-              <button key={val} type="button" onClick={() => setMode(val)}
+              <button key={val} type="button" onClick={() => { setMode(val); setSwappedList(null); }}
                 className={`flex flex-col items-start gap-1 p-4 rounded-2xl border text-left transition-colors ${mode === val ? `${active} text-white` : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
                 <span className="text-lg font-bold">{title}</span>
                 <span className={`text-[11px] ${mode === val ? 'text-white/80' : 'text-gray-500'}`}>{sub}</span>
@@ -429,12 +464,12 @@ export default function WorkoutPage() {
         )}
 
         {/* Tidsbudget */}
-        {!isHiit && (
+        {!isHiit && !isCustom && (
         <div>
           <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Hvor lang tid har du?</label>
           <div className="grid grid-cols-2 gap-3">
             {([[25, '25 min', 'Kort — de vigtigste øvelser'], [45, '45 min', 'Fuld — alle øvelser']] as const).map(([val, title, sub]) => (
-              <button key={val} type="button" onClick={() => setTimeBudget(val)}
+              <button key={val} type="button" onClick={() => { setTimeBudget(val); setSwappedList(null); }}
                 className={`flex flex-col items-start gap-1 p-4 rounded-2xl border text-left transition-colors ${timeBudget === val ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
                 <span className="text-lg font-bold">{title}</span>
                 <span className={`text-[11px] ${timeBudget === val ? 'text-white/80' : 'text-gray-500'}`}>{sub}</span>
@@ -458,7 +493,7 @@ export default function WorkoutPage() {
         </div>
 
         {/* Muskelgrupper */}
-        {(!isHiit || !hiitFromUrl) && availableCategories.length > 0 && (
+        {!isCustom && (!isHiit || !hiitFromUrl) && availableCategories.length > 0 && (
           <div>
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Muskelgrupper</label>
             <p className="text-xs text-gray-500 mb-3">
@@ -491,17 +526,28 @@ export default function WorkoutPage() {
             <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">
               Dagens øvelser <span className="text-orange-400">({previewCount})</span>
             </label>
+            <p className="text-xs text-gray-500 mb-3">Tryk «Skift» for at bytte en øvelse ud med en anden.</p>
             <div className="space-y-2">
               {previewExercises.map((ex, i) => (
-                <div key={ex.id} className="flex items-center gap-3 bg-white/5 rounded-2xl px-4 py-3 border border-white/10">
+                <div key={`${ex.id}-${i}`} className="flex items-center gap-3 bg-white/5 rounded-2xl px-4 py-3 border border-white/10">
                   <span className="text-orange-500 font-bold text-sm w-5 flex-shrink-0">{i + 1}</span>
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-sm truncate">{ex.name}</p>
-                    {ex.category && <p className="text-[11px] text-gray-500 uppercase tracking-wider">{ex.category}</p>}
+                    <div className="flex items-center gap-2 mt-1">
+                      {ex.category && (
+                        <span className="inline-block px-2 py-0.5 rounded-md bg-white/10 border border-white/10 text-orange-400 text-[10px] font-bold uppercase tracking-wider">
+                          {ex.category}
+                        </span>
+                      )}
+                      <span className="text-[11px] text-gray-500 truncate">
+                        {isHiit ? `${HIIT_SETS} × ${HIIT_REPS}` : ex.is_time_based ? 'Tid' : `${ex.recommended_reps || '?'} reps`}
+                      </span>
+                    </div>
                   </div>
-                  <span className="text-[11px] text-gray-500 flex-shrink-0 max-w-[38%] truncate">
-                    {isHiit ? `${HIIT_SETS} × ${HIIT_REPS}` : ex.is_time_based ? 'Tid' : `${ex.recommended_reps || '?'} reps`}
-                  </span>
+                  <button type="button" onClick={() => { setSwapIndex(i); setSwapCat(null); }}
+                    className="flex items-center gap-1 px-3 py-2 rounded-xl bg-white/5 hover:bg-white/15 border border-white/10 text-gray-300 text-[11px] font-bold uppercase tracking-wider transition-colors active:scale-95 flex-shrink-0">
+                    <Repeat className="w-3.5 h-3.5" /> Skift
+                  </button>
                 </div>
               ))}
             </div>
@@ -517,6 +563,70 @@ export default function WorkoutPage() {
           </button>
         </div>
       </div>
+
+      {/* ── SKIFT ØVELSE ── */}
+      {swapIndex !== null && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex flex-col animate-in fade-in">
+          <div className="w-full max-w-md mx-auto flex flex-col h-full">
+            <header className="flex items-start justify-between gap-3 p-5 border-b border-white/10 flex-shrink-0">
+              <div className="min-w-0">
+                <h3 className="text-xl font-bold">Skift øvelse</h3>
+                <p className="text-xs text-gray-400 mt-1 truncate">
+                  Erstatter <span className="text-orange-400 font-semibold">{previewExercises[swapIndex]?.name}</span>
+                  {previewExercises[swapIndex]?.category && <span className="text-gray-500"> · {previewExercises[swapIndex]?.category}</span>}
+                </p>
+              </div>
+              <button type="button" onClick={() => setSwapIndex(null)}
+                className="p-2 rounded-full hover:bg-white/10 text-gray-400 transition-colors flex-shrink-0">
+                <X className="w-5 h-5" />
+              </button>
+            </header>
+
+            <div className="p-5 border-b border-white/10 flex-shrink-0">
+              <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Muskelgruppe</label>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" onClick={() => setSwapCat(null)}
+                  className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors active:scale-95 ${swapCat === null ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                  Alle
+                </button>
+                {availableCategories.map(cat => (
+                  <button key={cat} type="button" onClick={() => setSwapCat(prev => prev === cat ? null : cat)}
+                    className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors active:scale-95 ${swapCat === cat ? 'bg-orange-500 border-orange-500 text-white' : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-2">
+              {swapCandidates.length === 0 ? (
+                <p className="text-gray-400 text-sm text-center py-8">Ingen andre øvelser at vælge imellem.</p>
+              ) : swapCandidates.map(ex => {
+                const same = ex.category === previewExercises[swapIndex]?.category;
+                return (
+                  <button key={ex.id} type="button" onClick={() => applySwap(ex)}
+                    className="w-full flex items-center gap-3 bg-white/5 hover:bg-white/15 rounded-2xl px-4 py-3 border border-white/10 text-left transition-colors active:scale-95">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-sm truncate">{ex.name}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        {ex.category && (
+                          <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${same ? 'bg-orange-500/20 border-orange-500/30 text-orange-300' : 'bg-white/10 border-white/10 text-gray-400'}`}>
+                            {ex.category}
+                          </span>
+                        )}
+                        <span className="text-[11px] text-gray-500 truncate">
+                          {isHiit ? `${HIIT_SETS} × ${HIIT_REPS}` : ex.is_time_based ? 'Tid' : `${ex.recommended_reps || '?'} reps`}
+                        </span>
+                      </div>
+                    </div>
+                    <Repeat className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 
