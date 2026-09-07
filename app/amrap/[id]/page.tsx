@@ -7,7 +7,7 @@ import { useWakeLock } from '@/hooks/use-wake-lock';
 import { supabase } from '@/lib/supabase/client';
 import { todayISO } from '@/lib/workout';
 import type { User } from '@supabase/supabase-js';
-import { ArrowLeft, Play, Pause, Timer, Trophy, Repeat, Flag } from 'lucide-react';
+import { ArrowLeft, Play, Pause, Timer, Trophy, Repeat, Flag, Check } from 'lucide-react';
 
 type AmrapMove = { name: string; reps: number };
 type Amrap     = { id: string; name: string; duration_minutes: number; exercises: AmrapMove[]; record_rounds: number | null };
@@ -32,6 +32,10 @@ export default function AmrapPage() {
   const [isPaused, setIsPaused]       = useState(false);
   const [rounds, setRounds]           = useState(0);
   const [isRecord, setIsRecord]       = useState(false);
+
+  // Hvor langt man nåede i den runde der ikke blev færdig (0-baseret plads i runden)
+  const [partialIndex, setPartialIndex]   = useState<number | null>(null);
+  const [isSavingPartial, setIsSavingPartial] = useState(false);
 
   const [sessionId, setSessionId]     = useState<string | null>(null);
   const [calories, setCalories]       = useState('');
@@ -102,6 +106,18 @@ export default function AmrapPage() {
     }
   }, [state, saveSession]);
 
+  // Gemmer hvor langt man nåede i den sidste, ufuldendte runde
+  async function handlePickPartial(index: number | null) {
+    setPartialIndex(index);
+    if (!sessionId || !amrap) return;
+    setIsSavingPartial(true);
+    await supabase.from('workout_sessions').update({
+      amrap_partial_exercise: index === null ? null : amrap.exercises[index]?.name ?? null,
+      amrap_partial_index:    index === null ? null : index + 1,
+    }).eq('id', sessionId);
+    setIsSavingPartial(false);
+  }
+
   async function handleSaveCalories() {
     if (!sessionId) return;
     const val = parseInt(calories, 10);
@@ -130,7 +146,7 @@ export default function AmrapPage() {
   const totalSeconds = amrap.duration_minutes * 60;
 
   if (state === 'FINISHED') return (
-    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 text-white w-full max-w-md mx-auto">
+    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center p-6 py-10 text-white w-full max-w-md mx-auto">
       <Trophy className={`w-24 h-24 mb-6 animate-bounce ${isRecord ? 'text-yellow-400' : 'text-orange-500'}`} />
       <h1 className="text-4xl font-bold tracking-tighter mb-2">TID!</h1>
       <p className="text-orange-400 font-bold mb-1">{dagLabel ? `${dagLabel} · ` : ''}{amrap.name}</p>
@@ -156,6 +172,33 @@ export default function AmrapPage() {
           <p className="text-sm text-gray-400">Din rekord er <span className="text-orange-400 font-bold">{amrap.record_rounds} runder</span>.</p>
         </div>
       )}
+
+      {/* Hvor langt nåede du i den runde du var i gang med? */}
+      <div className="w-full max-w-sm bg-white/5 border border-white/10 rounded-3xl p-5 mb-4">
+        <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block">
+          Hvor langt kom du i runde {rounds + 1}?
+        </label>
+        <p className="text-xs text-gray-500 mt-1 mb-3">Vælg den øvelse du var nået til, da tiden løb ud.</p>
+        <div className="space-y-2">
+          {amrap.exercises.map((m, i) => {
+            const sel = partialIndex === i;
+            return (
+              <button key={i} type="button" onClick={() => handlePickPartial(i)} disabled={isSavingPartial}
+                className={`w-full flex items-center gap-3 rounded-2xl px-4 py-3 border text-left transition-colors active:scale-95 disabled:opacity-60 ${sel ? 'bg-orange-500/20 border-orange-500/40' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>
+                <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0 ${sel ? 'bg-orange-500 text-white' : 'bg-white/10 text-gray-500'}`}>
+                  {i + 1}
+                </span>
+                <p className="flex-1 min-w-0 font-bold text-sm break-words">{m.name}</p>
+                {sel && <Check className="w-4 h-4 text-orange-400 flex-shrink-0" />}
+              </button>
+            );
+          })}
+          <button type="button" onClick={() => handlePickPartial(null)} disabled={isSavingPartial}
+            className={`w-full rounded-2xl px-4 py-3 border text-sm font-bold transition-colors active:scale-95 disabled:opacity-60 ${partialIndex === null ? 'bg-white/10 border-white/20 text-gray-200' : 'bg-white/5 border-white/10 text-gray-400 hover:bg-white/10'}`}>
+            Jeg nåede lige præcis at blive færdig
+          </button>
+        </div>
+      </div>
 
       <div className="w-full max-w-sm bg-white/5 border border-white/10 rounded-3xl p-5 mb-4">
         <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 block">Forbrændte kalorier (valgfrit)</label>
@@ -188,7 +231,7 @@ export default function AmrapPage() {
         <div className="w-10" />
       </header>
 
-      <main className="flex-1 flex flex-col p-6 gap-5 pb-28">
+      <main className="flex-1 flex flex-col p-6 gap-5">
 
         {state === 'READY' ? (
           <>
@@ -271,7 +314,8 @@ export default function AmrapPage() {
         )}
       </main>
 
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-black/60 backdrop-blur-md border-t border-white/10">
+      {/* Knapperne står i bunden af siden — ikke oven på øvelserne */}
+      <div className="p-4 border-t border-white/10 bg-black/40">
         <div className="max-w-md mx-auto flex flex-col gap-3">
           {state === 'READY' ? (
             <button onClick={() => setState('RUNNING')}

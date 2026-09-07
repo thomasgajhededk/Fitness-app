@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw, X, Flame, Footprints, Target, Timer, Trophy, Shuffle, ListPlus } from 'lucide-react';
+import { Dumbbell, Settings, CalendarDays, RefreshCw, CheckCircle2, Circle, Zap, ChevronRight, RotateCcw, X, Flame, Footprints, Target, Timer, Trophy, Shuffle, ListPlus, Activity, Gauge } from 'lucide-react';
 import { supabase } from '@/lib/supabase/client';
 import MuscleHeatmap from '@/components/muscle-heatmap';
 import { CATEGORY_ORDER, shuffle, spreadCategories, getMondayISO, todayISO } from '@/lib/workout';
@@ -19,8 +19,11 @@ type Session    = {
   completed_date: string;
   calories_burned: number | null;
   distance_km: number | null;
+  avg_speed_kmh: number | null;
   amrap_name: string | null;
   amrap_rounds: number | null;
+  amrap_partial_exercise: string | null;
+  amrap_partial_index: number | null;
   exercises: { id: string; name: string; category: string | null }[] | null;
 };
 type AmrapMove  = { name: string; reps: number };
@@ -33,7 +36,7 @@ const GRIP_OPTS = [
   { value: 'ankelbånd',  label: 'Ankelbånd' },
 ];
 
-const TYPE_LABEL: Record<string, string> = { fullbody: 'Fullbody', hoejintens: 'Højintens', walk: 'Gåtur', amrap: 'AMRAP' };
+const TYPE_LABEL: Record<string, string> = { fullbody: 'Fullbody', hoejintens: 'Højintens', walk: 'Gåtur', run: 'Løbetur', amrap: 'AMRAP' };
 
 function buildProgram(exercises: Exercise[], includeCardio: boolean): ProgramDay[] {
   const pool = includeCardio ? exercises : exercises.filter(e => e.category !== 'Cardio');
@@ -151,9 +154,11 @@ export default function HomePage() {
   // Programdag hvor man er ved at vælge en AMRAP i stedet for den planlagte træning
   const [amrapForDay, setAmrapForDay]   = useState<string | null>(null);
 
-  // Gåtur
+  // Gåtur / løbetur
   const [showWalk, setShowWalk]         = useState(false);
+  const [walkMode, setWalkMode]         = useState<'walk' | 'run'>('walk');
   const [walkDistance, setWalkDistance] = useState('');
+  const [walkSpeed, setWalkSpeed]       = useState('');
   const [walkCalories, setWalkCalories] = useState('');
   const [isSavingWalk, setIsSavingWalk] = useState(false);
   const [walkError, setWalkError]       = useState<string | null>(null);
@@ -162,7 +167,7 @@ export default function HomePage() {
     const monday = getMondayISO();
     const [sessRes, logRes] = await Promise.all([
       supabase.from('workout_sessions')
-        .select('id, day_label, workout_type, completed_date, calories_burned, distance_km, amrap_name, amrap_rounds, exercises')
+        .select('id, day_label, workout_type, completed_date, calories_burned, distance_km, avg_speed_kmh, amrap_name, amrap_rounds, amrap_partial_exercise, amrap_partial_index, exercises')
         .eq('user_id', uid).gte('completed_date', monday).order('completed_date', { ascending: false }),
       supabase.from('workout_logs')
         .select('exercises(category)')
@@ -310,24 +315,30 @@ export default function HomePage() {
 
   async function handleSaveWalk() {
     if (!user) return;
-    const km   = parseFloat(walkDistance.replace(',', '.'));
-    const kcal = parseInt(walkCalories, 10);
-    if (!(km > 0))                  { setWalkError('Skriv hvor langt du gik (km).'); return; }
-    if (isNaN(kcal) || kcal < 0)    { setWalkError('Skriv hvor mange kalorier du forbrændte.'); return; }
+    const isRun = walkMode === 'run';
+    const label = isRun ? 'Løbetur' : 'Gåtur';
+    const km    = parseFloat(walkDistance.replace(',', '.'));
+    const speed = walkSpeed.trim() ? parseFloat(walkSpeed.replace(',', '.')) : null;
+    const kcal  = parseInt(walkCalories, 10);
+    if (!(km > 0))                          { setWalkError(`Skriv hvor langt du ${isRun ? 'løb' : 'gik'} (km).`); return; }
+    if (speed !== null && !(speed > 0))     { setWalkError('Gennemsnitsfarten skal være et tal over 0.'); return; }
+    if (isNaN(kcal) || kcal < 0)            { setWalkError('Skriv hvor mange kalorier du forbrændte.'); return; }
 
     setWalkError(null);
     setIsSavingWalk(true);
     const { error } = await supabase.from('workout_sessions').insert({
       user_id: user.id,
-      day_label: 'Gåtur',
-      workout_type: 'walk',
+      day_label: label,
+      workout_type: walkMode,
       completed_date: todayISO(),
       distance_km: km,
+      avg_speed_kmh: speed,
       calories_burned: kcal,
     });
     setIsSavingWalk(false);
-    if (error) { setWalkError(`Kunne ikke gemme gåturen: ${error.message}`); return; }
+    if (error) { setWalkError(`Kunne ikke gemme ${label.toLowerCase()}en: ${error.message}`); return; }
     setWalkDistance('');
+    setWalkSpeed('');
     setWalkCalories('');
     setShowWalk(false);
     await loadWeek(user.id);
@@ -394,7 +405,7 @@ export default function HomePage() {
               </div>
               {weekKm > 0 && (
                 <div className="text-right">
-                  <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Gået</p>
+                  <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Gået / løbet</p>
                   <p className="text-lg font-bold text-green-400">{weekKm.toFixed(1)} km</p>
                 </div>
               )}
@@ -829,22 +840,50 @@ export default function HomePage() {
           <button onClick={() => { setShowWalk(p => !p); setWalkError(null); }}
             className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-colors active:scale-95 shadow-lg">
             {showWalk ? <X className="w-5 h-5 text-gray-400" /> : <Footprints className="w-5 h-5 text-green-400" />}
-            {showWalk ? 'LUK GÅTUR' : 'LOG EN GÅTUR'}
+            {showWalk ? 'LUK TUR' : 'LOG EN GÅ- ELLER LØBETUR'}
           </button>
         )}
 
         {showWalk && (
           <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-lg animate-in slide-in-from-bottom-4">
             <h3 className="text-xl font-bold mb-1 flex items-center gap-2">
-              <Footprints className="w-5 h-5 text-green-400" /> Gåtur
+              {walkMode === 'run'
+                ? <Activity className="w-5 h-5 text-sky-400" />
+                : <Footprints className="w-5 h-5 text-green-400" />}
+              {walkMode === 'run' ? 'Løbetur' : 'Gåtur'}
             </h3>
-            <p className="text-sm text-gray-400 mb-5">Skriv hvor langt du gik, og hvad du forbrændte.</p>
+            <p className="text-sm text-gray-400 mb-5">
+              Skriv hvor langt du {walkMode === 'run' ? 'løb' : 'gik'}, hvor hurtigt, og hvad du forbrændte.
+            </p>
 
             <div className="flex flex-col gap-3">
+              {/* Gåtur eller løbetur */}
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  ['walk', 'Gåtur',   'bg-green-500 border-green-500'],
+                  ['run',  'Løbetur', 'bg-sky-500 border-sky-500'],
+                ] as const).map(([val, title, active]) => (
+                  <button key={val} type="button" onClick={() => { setWalkMode(val); setWalkError(null); }}
+                    className={`py-3 rounded-xl text-sm font-bold border transition-colors active:scale-95 flex items-center justify-center gap-2 ${walkMode === val ? `${active} text-white` : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'}`}>
+                    {val === 'run' ? <Activity className="w-4 h-4" /> : <Footprints className="w-4 h-4" />}
+                    {title}
+                  </button>
+                ))}
+              </div>
+
               <div>
                 <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">Afstand (km)</label>
                 <input type="number" inputMode="decimal" step="0.1" value={walkDistance}
                   onChange={e => { setWalkDistance(e.target.value); setWalkError(null); }} placeholder="Fx. 4,2"
+                  className="w-full bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-green-500 text-white placeholder-gray-500" />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">
+                  Gns. hastighed (km/t) <span className="text-gray-600 normal-case font-medium">— valgfrit</span>
+                </label>
+                <input type="number" inputMode="decimal" step="0.1" value={walkSpeed}
+                  onChange={e => { setWalkSpeed(e.target.value); setWalkError(null); }}
+                  placeholder={walkMode === 'run' ? 'Fx. 10,5' : 'Fx. 5,4'}
                   className="w-full bg-black/40 rounded-2xl px-4 py-3 border border-white/10 focus:outline-none focus:border-green-500 text-white placeholder-gray-500" />
               </div>
               <div>
@@ -855,8 +894,8 @@ export default function HomePage() {
               </div>
               {walkError && <p className="text-red-400 text-sm font-medium bg-red-400/10 p-3 rounded-xl border border-red-400/20">{walkError}</p>}
               <button onClick={handleSaveWalk} disabled={isSavingWalk}
-                className="w-full bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white font-bold py-4 rounded-2xl shadow-lg shadow-green-500/20 active:scale-95 transition-colors">
-                {isSavingWalk ? 'GEMMER...' : 'GEM GÅTUR'}
+                className={`w-full disabled:opacity-50 text-white font-bold py-4 rounded-2xl shadow-lg active:scale-95 transition-colors ${walkMode === 'run' ? 'bg-sky-500 hover:bg-sky-600 shadow-sky-500/20' : 'bg-green-500 hover:bg-green-600 shadow-green-500/20'}`}>
+                {isSavingWalk ? 'GEMMER...' : walkMode === 'run' ? 'GEM LØBETUR' : 'GEM GÅTUR'}
               </button>
             </div>
           </div>
@@ -914,6 +953,13 @@ export default function HomePage() {
                         )}
                       </div>
                     </div>
+                    {session?.amrap_partial_exercise && (
+                      <div className="px-6 pb-2">
+                        <p className="text-xs text-blue-300/80 bg-blue-500/10 border border-blue-500/20 rounded-xl px-3 py-2">
+                          Nåede til <span className="font-bold">{session.amrap_partial_exercise}</span> i runde {(session.amrap_rounds ?? 0) + 1}
+                        </p>
+                      </div>
+                    )}
                     <div className="px-6 pb-4 space-y-1.5">
                       {shown.map((ex, i) => (
                         <div key={`${ex.id}-${i}`} className="flex items-center gap-2">
@@ -933,13 +979,17 @@ export default function HomePage() {
                             className="block text-center w-full bg-white/10 hover:bg-white/20 text-white border border-white/10 font-bold py-4 rounded-2xl active:scale-95 transition-colors">
                             START {day.label.toUpperCase()}
                           </Link>
+                          {/* En AMRAP kan tages som dagens træning — den tæller så for dagen */}
                           <button onClick={() => setAmrapForDay(prev => prev === day.label ? null : day.label)}
-                            className="w-full text-blue-400 hover:text-blue-300 text-xs font-bold uppercase tracking-wider py-2 flex items-center justify-center gap-2 transition-colors">
-                            <Timer className="w-4 h-4" />
-                            {amrapForDay === day.label ? 'Luk AMRAP' : 'Tag en AMRAP i stedet'}
+                            className={`w-full font-bold py-4 rounded-2xl flex items-center justify-center gap-2 transition-colors active:scale-95 border ${amrapForDay === day.label ? 'bg-blue-500/20 border-blue-500/40 text-blue-300' : 'bg-white/5 border-white/10 text-blue-400 hover:bg-white/10'}`}>
+                            {amrapForDay === day.label ? <X className="w-5 h-5" /> : <Timer className="w-5 h-5" />}
+                            {amrapForDay === day.label ? 'LUK AMRAP' : 'TAG EN AMRAP I STEDET'}
                           </button>
                           {amrapForDay === day.label && (
-                            <div className="animate-in slide-in-from-bottom-2">
+                            <div className="animate-in slide-in-from-bottom-2 pt-1">
+                              <p className="text-xs text-gray-400 mb-3">
+                                Vælg hvilken AMRAP du vil køre. Den tæller som {day.label} og gemmes med runder og kalorier.
+                              </p>
                               <AmrapList amraps={amraps} dagLabel={day.label} />
                             </div>
                           )}
@@ -960,6 +1010,7 @@ export default function HomePage() {
             <div className="flex flex-col gap-3">
               {extraSessions.map(s => {
                 const isWalk  = s.workout_type === 'walk';
+                const isRun   = s.workout_type === 'run';
                 const isAmrap = s.workout_type === 'amrap';
                 return (
                   <div key={s.id} className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-5 shadow-lg">
@@ -968,19 +1019,31 @@ export default function HomePage() {
                         <div className="flex items-center gap-2">
                           {isWalk
                             ? <Footprints className="w-4 h-4 text-green-400 flex-shrink-0" />
-                            : isAmrap
-                              ? <Timer className="w-4 h-4 text-blue-400 flex-shrink-0" />
-                              : <Target className="w-4 h-4 text-red-400 flex-shrink-0" />}
+                            : isRun
+                              ? <Activity className="w-4 h-4 text-sky-400 flex-shrink-0" />
+                              : isAmrap
+                                ? <Timer className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                                : <Target className="w-4 h-4 text-red-400 flex-shrink-0" />}
                           <p className="font-bold break-words">{s.day_label}</p>
                         </div>
                         <p className="text-xs text-gray-500 mt-0.5">
                           {new Date(s.completed_date).toLocaleDateString('da-DK', { weekday: 'long', day: 'numeric', month: 'short' })}
-                          {!isWalk && ` · ${TYPE_LABEL[s.workout_type ?? ''] ?? 'Træning'}`}
+                          {!isWalk && !isRun && ` · ${TYPE_LABEL[s.workout_type ?? ''] ?? 'Træning'}`}
                         </p>
+                        {isAmrap && s.amrap_partial_exercise && (
+                          <p className="text-xs text-blue-300/80 mt-1">
+                            Nåede til <span className="font-bold">{s.amrap_partial_exercise}</span> i runde {(s.amrap_rounds ?? 0) + 1}
+                          </p>
+                        )}
                       </div>
                       <div className="flex flex-col items-end gap-1 flex-shrink-0">
                         {s.distance_km != null && (
-                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 whitespace-nowrap">{s.distance_km} km</span>
+                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap ${isRun ? 'bg-sky-500/20 border border-sky-500/30 text-sky-300' : 'bg-green-500/20 border border-green-500/30 text-green-300'}`}>{s.distance_km} km</span>
+                        )}
+                        {s.avg_speed_kmh != null && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-white/10 border border-white/10 text-gray-300 whitespace-nowrap flex items-center gap-1">
+                            <Gauge className="w-3 h-3" /> {s.avg_speed_kmh} km/t
+                          </span>
                         )}
                         {s.amrap_rounds != null && (
                           <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/30 text-blue-300 whitespace-nowrap flex items-center gap-1">
